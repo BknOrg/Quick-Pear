@@ -496,4 +496,8 @@ class QuickPearNode(
     ): Boolean {
         return signalingClient.joinCloudPairing(code, confirm)
     }
+
+    fun clearTrustedDevices() {
+        trustStore.clear()
+    }
 }

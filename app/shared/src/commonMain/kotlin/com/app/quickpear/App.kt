@@ -1,5 +1,7 @@
 package com.app.quickpear
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -10,30 +12,41 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,7 +55,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path as ComposePath
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -58,17 +74,65 @@ import com.app.quickpear.ui.RemotePairingSasState
 import com.app.quickpear.ui.TransferViewModel
 import com.app.quickpear.ui.components.QrCodeView
 import com.app.quickpear.ui.components.RadarView
-import com.app.quickpear.ui.components.TransferProgressDialog
 import okio.Path
+
+/**
+ * 7 User Theme Palette - Dark Charcoal (#3D383C) Mode:
+ * - #3D383C: Dark Espresso Charcoal (Main Background & Container)
+ * - #FFF6E9: Warm Cream (Primary Headings & Text)
+ * - #6E9D24: Pear Green (Brand Primary Accent & Online Status)
+ * - #606974: Slate Muted (Inactive Elements & Helper Labels)
+ * - #CECECC: Warm Gray (Outlines, Dividers & Secondary Typography)
+ * - #405DB7: Royal Blue (Secondary Action Buttons & Links)
+ * - #4B5B76: Slate Indigo (Card Borders, Category Chips & Tags)
+ */
+object QuickPearColors {
+    val DarkCharcoal = Color(0xFF3D383C) // Base dark background (#3d383c)
+    val SurfaceDark = Color(0xFF2C282B)  // Top bar, bottom bar & dialog container
+    val CardSurface = Color(0xFF353034)  // Cards background
+    val WarmCream = Color(0xFFFFF6E9)    // Primary text & headings (#fff6e9)
+    val WarmGray = Color(0xFFCECECC)     // Outlines & subtle borders (#cececc)
+    val PearGreen = Color(0xFF6E9D24)    // Brand Accent, Online status & primary buttons (#6e9d24)
+    val SlateMuted = Color(0xFF606974)   // Inactive tab icons, metadata (#606974)
+    val RoyalBlue = Color(0xFF405DB7)    // Secondary Action buttons & links (#405db7)
+    val SlateIndigo = Color(0xFF4B5B76)  // Card borders, category tags & chips (#4b5b76)
+}
+
+val QuickPearDarkColorScheme = darkColorScheme(
+    primary = QuickPearColors.PearGreen,
+    onPrimary = Color.White,
+    primaryContainer = QuickPearColors.PearGreen.copy(alpha = 0.25f),
+    onPrimaryContainer = QuickPearColors.WarmCream,
+    secondary = QuickPearColors.RoyalBlue,
+    onSecondary = Color.White,
+    secondaryContainer = QuickPearColors.RoyalBlue.copy(alpha = 0.25f),
+    onSecondaryContainer = Color(0xFFDCE4F9),
+    tertiary = QuickPearColors.SlateIndigo,
+    onTertiary = Color.White,
+    tertiaryContainer = QuickPearColors.SlateIndigo.copy(alpha = 0.35f),
+    onTertiaryContainer = QuickPearColors.WarmCream,
+    background = QuickPearColors.DarkCharcoal,
+    onBackground = QuickPearColors.WarmCream,
+    surface = QuickPearColors.SurfaceDark,
+    onSurface = QuickPearColors.WarmCream,
+    surfaceVariant = QuickPearColors.CardSurface,
+    onSurfaceVariant = QuickPearColors.WarmGray,
+    outline = QuickPearColors.SlateIndigo.copy(alpha = 0.4f),
+    outlineVariant = QuickPearColors.WarmGray.copy(alpha = 0.2f)
+)
+
+enum class AppTab(val title: String) {
+    NEARBY("Nearby"),
+    TRUSTED("Trusted"),
+    SETTINGS("Settings")
+}
 
 @Composable
 fun App(
     viewModel: TransferViewModel = remember { TransferViewModel() }
 ) {
     val state by viewModel.uiState.collectAsState()
-    var selectedTabIndex by remember { mutableStateOf(0) }
-    val tabs = listOf("Sekitar", "Terpercaya", "Pengaturan")
-
+    var selectedTab by remember { mutableStateOf(AppTab.NEARBY) }
     var textTargetPeer by remember { mutableStateOf<PeerDevice?>(null) }
 
     val filePickerLauncher = com.app.quickpear.ui.rememberFilePickerLauncher { peer, paths ->
@@ -79,219 +143,281 @@ fun App(
         viewModel.startWebShare(paths, withHotspot = true)
     }
 
-    MaterialTheme {
-        Scaffold(
-            topBar = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surface)
-                        .padding(top = 16.dp, start = 16.dp, end = 16.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = "Quick Pear",
-                                fontSize = 24.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = state.localDeviceName.ifEmpty { "Transfer Nirkabel Cepat" },
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                            )
-                        }
-
-                        // Background readiness & cloud badge
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(Color(0xFF10B981).copy(alpha = 0.15f))
-                                    .padding(horizontal = 10.dp, vertical = 5.dp)
-                            ) {
-                                Text(
-                                    text = "● Cloud Hybrid Siap",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = Color(0xFF059669)
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    TabRow(
-                        selectedTabIndex = selectedTabIndex,
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ) {
-                        tabs.forEachIndexed { index, title ->
-                            Tab(
-                                selected = selectedTabIndex == index,
-                                onClick = { selectedTabIndex = index },
-                                text = {
-                                    Text(
-                                        text = title,
-                                        fontWeight = if (selectedTabIndex == index) FontWeight.Bold else FontWeight.Normal
-                                    )
-                                }
-                            )
-                        }
-                    }
-                }
-            },
-            bottomBar = {
-                state.statusMessage?.let { msg ->
-                    Snackbar(
-                        modifier = Modifier.padding(16.dp),
-                        action = {
-                            TextButton(onClick = { viewModel.dismissStatusMessage() }) {
-                                Text("Tutup", color = MaterialTheme.colorScheme.inversePrimary)
-                            }
-                        }
-                    ) {
-                        Text(text = msg)
-                    }
-                }
-            }
-        ) { paddingValues ->
+    MaterialTheme(colorScheme = QuickPearDarkColorScheme) {
+        // Responsive Outer Container: Centered max-width for tablet & desktop, edge-to-edge for mobile
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF262325)), // Sleek deep backdrop on desktop
+            contentAlignment = Alignment.TopCenter
+        ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(paddingValues)
-                    .background(MaterialTheme.colorScheme.background)
+                    .widthIn(max = 640.dp)
+                    .background(QuickPearColors.DarkCharcoal)
             ) {
-                when (selectedTabIndex) {
-                    0 -> NearbyDevicesTab(
-                        devices = state.discoveredDevices,
-                        selectedDevice = state.selectedDevice,
-                        trustedDevices = state.trustedDevices,
-                        isPairing = state.isPairingInProgress,
-                        onDeviceSelected = { viewModel.selectDevice(it) },
-                        onPairClicked = { viewModel.initiatePairing(it) },
-                        onSendClicked = { filePickerLauncher(it) },
-                        onSendTextClicked = { textTargetPeer = it },
-                        onStartWebShare = {
-                            webShareFilePicker(PeerDevice(id = "", name = "Web Share", ipAddress = ""))
-                        },
-                        onRemotePairClicked = { viewModel.openRemotePairDialog() }
-                    )
-                    1 -> TrustedDevicesTab(
-                        trustedDevices = state.trustedDevices,
-                        onlineDevices = state.discoveredDevices,
-                        onSendClicked = { filePickerLauncher(it) },
-                        onSendTextClicked = { textTargetPeer = it },
-                        onRemove = { viewModel.removeTrustedDevice(it.id) },
-                        onRemotePairClicked = { viewModel.openRemotePairDialog() }
-                    )
-                    2 -> SettingsTab(
-                        deviceName = state.localDeviceName,
-                        deviceId = state.localDeviceId,
-                        localIpAddress = state.localIpAddress,
-                        allLocalIpAddresses = state.allLocalIpAddresses,
-                        localPort = state.localPort,
-                        mode = state.discoveryMode,
-                        onModeChange = { viewModel.setDiscoveryMode(it) }
-                    )
-                }
-
-                // Pairing confirmation dialog (Local LAN)
-                state.pendingPairing?.let { pairing ->
-                    PairingConfirmationDialog(
-                        pairing = pairing,
-                        onConfirm = { viewModel.confirmPairing(true) },
-                        onReject = { viewModel.confirmPairing(false) }
-                    )
-                }
-
-                // Remote Pairing Dialog (Cross-network pairing via 6-digit code)
-                if (state.showRemotePairDialog || state.pendingRemoteSas != null) {
-                    RemotePairDialog(
-                        generatedCode = state.generatedPairingCode,
-                        isPairingInProgress = state.isRemotePairingInProgress,
-                        pendingSas = state.pendingRemoteSas,
-                        onStartHost = { viewModel.startRemotePairingAsHost() },
-                        onJoinClient = { code -> viewModel.joinRemotePairingAsClient(code) },
-                        onCancelPairing = { viewModel.cancelRemotePairing() },
-                        onConfirmSas = { confirmed -> viewModel.confirmRemoteSas(confirmed) },
-                        onDismiss = { viewModel.closeRemotePairDialog() }
-                    )
-                }
-
-                // Send Text Dialog
-                textTargetPeer?.let { target ->
-                    SendTextDialog(
-                        targetName = target.name,
-                        onDismiss = { textTargetPeer = null },
-                        onSend = { text ->
-                            viewModel.sendText(target, text)
-                            textTargetPeer = null
-                        }
-                    )
-                }
-
-                // Incoming Text Dialog
-                state.incomingSharedText?.let { (sender, text) ->
-                    IncomingTextDialog(
-                        senderName = sender,
-                        text = text,
-                        onDismiss = { viewModel.dismissIncomingText() }
-                    )
-                }
-
-                // Web Share QR Dialog
-                state.webShareUrl?.let { url ->
-                    WebShareQrDialog(
-                        url = url,
-                        files = state.webShareFiles,
-                        hotspotInfo = state.webShareHotspotInfo,
-                        onDismiss = { viewModel.stopWebShare() }
-                    )
-                }
-
-                // Non-intrusive floating transfer banner (leaves screen fully usable)
-                state.transferProgress?.let { progress ->
-                    if (progress.status == com.app.quickpear.domain.TransferStatus.TRANSFERRING) {
-                        Card(
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+                Scaffold(
+                    containerColor = QuickPearColors.DarkCharcoal,
+                    topBar = {
+                        Surface(
+                            color = QuickPearColors.SurfaceDark,
+                            border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.35f)),
+                            shadowElevation = 4.dp
                         ) {
-                            Column(modifier = Modifier.padding(14.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .statusBarsPadding() // Adapts cleanly to mobile status bar & camera cutout
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(38.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(QuickPearColors.PearGreen),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text("Q", color = Color.White, fontWeight = FontWeight.Black, fontSize = 20.sp)
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text(
+                                            text = "Quick Pear",
+                                            fontSize = 17.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = QuickPearColors.WarmCream
+                                        )
+                                        Text(
+                                            text = state.localDeviceName.ifEmpty { "Fast Wireless Sharing" },
+                                            fontSize = 11.sp,
+                                            color = QuickPearColors.WarmGray
+                                        )
+                                    }
+                                }
+
+                                // Online Status Badge
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(QuickPearColors.PearGreen.copy(alpha = 0.2f))
+                                        .padding(horizontal = 10.dp, vertical = 5.dp)
                                 ) {
-                                    Text(
-                                        text = "Mentransfer: ${progress.fileName}",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = 1,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    Text(
-                                        text = "${(progress.progressPercentage * 100).toInt()}%",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(7.dp)
+                                                .clip(CircleShape)
+                                                .background(QuickPearColors.PearGreen)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Cloud Ready",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = QuickPearColors.PearGreen
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    bottomBar = {
+                        Column(
+                            modifier = Modifier
+                                .background(QuickPearColors.SurfaceDark)
+                                .navigationBarsPadding() // Ensures navigation bar doesn't touch Android gesture pill
+                        ) {
+                            // Status message snackbar
+                            state.statusMessage?.let { msg ->
+                                Snackbar(
+                                    modifier = Modifier.padding(12.dp),
+                                    containerColor = Color(0xFF221F21),
+                                    contentColor = QuickPearColors.WarmCream,
+                                    action = {
+                                        TextButton(onClick = { viewModel.dismissStatusMessage() }) {
+                                            Text("Dismiss", color = QuickPearColors.PearGreen)
+                                        }
+                                    }
+                                ) {
+                                    Text(text = msg)
+                                }
+                            }
+
+                            // Mobile-First Bottom Navigation Bar
+                            NavigationBar(
+                                containerColor = QuickPearColors.SurfaceDark,
+                                tonalElevation = 6.dp
+                            ) {
+                                AppTab.entries.forEach { tab ->
+                                    val isSelected = selectedTab == tab
+                                    NavigationBarItem(
+                                        selected = isSelected,
+                                        onClick = { selectedTab = tab },
+                                        icon = { AppTabIcon(tab, isSelected) },
+                                        label = {
+                                            Text(
+                                                text = tab.title,
+                                                fontSize = 11.sp,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                            )
+                                        },
+                                        colors = NavigationBarItemDefaults.colors(
+                                            indicatorColor = QuickPearColors.PearGreen.copy(alpha = 0.22f),
+                                            selectedIconColor = QuickPearColors.PearGreen,
+                                            unselectedIconColor = QuickPearColors.SlateMuted,
+                                            selectedTextColor = QuickPearColors.WarmCream,
+                                            unselectedTextColor = QuickPearColors.SlateMuted
+                                        )
                                     )
                                 }
-                                Spacer(modifier = Modifier.height(6.dp))
-                                androidx.compose.material3.LinearProgressIndicator(
-                                    progress = { progress.progressPercentage },
-                                    modifier = Modifier.fillMaxWidth().height(4.dp)
-                                )
+                            }
+                        }
+                    }
+                ) { paddingValues ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(paddingValues)
+                            .background(QuickPearColors.DarkCharcoal)
+                    ) {
+                        when (selectedTab) {
+                            AppTab.NEARBY -> NearbyDevicesScreen(
+                                devices = state.discoveredDevices,
+                                selectedDevice = state.selectedDevice,
+                                trustedDevices = state.trustedDevices,
+                                isPairing = state.isPairingInProgress,
+                                onDeviceSelected = { viewModel.selectDevice(it) },
+                                onPairClicked = { viewModel.initiatePairing(it) },
+                                onSendClicked = { filePickerLauncher(it) },
+                                onSendTextClicked = { textTargetPeer = it },
+                                onStartWebShare = {
+                                    webShareFilePicker(PeerDevice(id = "", name = "Web Share", ipAddress = ""))
+                                },
+                                onRemotePairClicked = { viewModel.openRemotePairDialog() }
+                            )
+                            AppTab.TRUSTED -> TrustedDevicesScreen(
+                                trustedDevices = state.trustedDevices,
+                                onlineDevices = state.discoveredDevices,
+                                onSendClicked = { filePickerLauncher(it) },
+                                onSendTextClicked = { textTargetPeer = it },
+                                onRename = { deviceId, newName -> viewModel.renameTrustedDevice(deviceId, newName) },
+                                onRemove = { viewModel.removeTrustedDevice(it.id) },
+                                onRemotePairClicked = { viewModel.openRemotePairDialog() }
+                            )
+                            AppTab.SETTINGS -> SettingsScreen(
+                                deviceName = state.localDeviceName,
+                                deviceId = state.localDeviceId,
+                                localIpAddress = state.localIpAddress,
+                                allLocalIpAddresses = state.allLocalIpAddresses,
+                                localPort = state.localPort,
+                                mode = state.discoveryMode,
+                                onModeChange = { viewModel.setDiscoveryMode(it) },
+                                trustedCount = state.trustedDevices.size,
+                                onClearTrustedDevices = { viewModel.clearAllTrustedDevices() }
+                            )
+                        }
+
+                        // Pairing confirmation dialog (Local LAN)
+                        state.pendingPairing?.let { pairing ->
+                            PairingConfirmationDialog(
+                                pairing = pairing,
+                                onConfirm = { viewModel.confirmPairing(true) },
+                                onReject = { viewModel.confirmPairing(false) }
+                            )
+                        }
+
+                        // Remote Pairing Dialog (Cross-network pairing via 6-digit code)
+                        if (state.showRemotePairDialog || state.pendingRemoteSas != null) {
+                            RemotePairDialog(
+                                generatedCode = state.generatedPairingCode,
+                                isPairingInProgress = state.isRemotePairingInProgress,
+                                pendingSas = state.pendingRemoteSas,
+                                onStartHost = { viewModel.startRemotePairingAsHost() },
+                                onJoinClient = { code -> viewModel.joinRemotePairingAsClient(code) },
+                                onCancelPairing = { viewModel.cancelRemotePairing() },
+                                onConfirmSas = { confirmed -> viewModel.confirmRemoteSas(confirmed) },
+                                onDismiss = { viewModel.closeRemotePairDialog() }
+                            )
+                        }
+
+                        // Send Text Dialog
+                        textTargetPeer?.let { target ->
+                            SendTextDialog(
+                                targetName = target.name,
+                                onDismiss = { textTargetPeer = null },
+                                onSend = { text ->
+                                    viewModel.sendText(target, text)
+                                    textTargetPeer = null
+                                }
+                            )
+                        }
+
+                        // Incoming Text Dialog
+                        state.incomingSharedText?.let { (sender, text) ->
+                            IncomingTextDialog(
+                                senderName = sender,
+                                text = text,
+                                onDismiss = { viewModel.dismissIncomingText() }
+                            )
+                        }
+
+                        // Web Share QR Dialog
+                        state.webShareUrl?.let { url ->
+                            WebShareQrDialog(
+                                url = url,
+                                files = state.webShareFiles,
+                                hotspotInfo = state.webShareHotspotInfo,
+                                onDismiss = { viewModel.stopWebShare() }
+                            )
+                        }
+
+                        // Floating Transfer Banner
+                        state.transferProgress?.let { progress ->
+                            if (progress.status == com.app.quickpear.domain.TransferStatus.TRANSFERRING) {
+                                Card(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .fillMaxWidth()
+                                        .padding(14.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = QuickPearColors.SurfaceDark),
+                                    border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.5f)),
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+                                ) {
+                                    Column(modifier = Modifier.padding(14.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "Transferring: ${progress.fileName}",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = QuickPearColors.WarmCream,
+                                                maxLines = 1,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Text(
+                                                text = "${(progress.progressPercentage * 100).toInt()}%",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = QuickPearColors.PearGreen
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        LinearProgressIndicator(
+                                            progress = { progress.progressPercentage },
+                                            color = QuickPearColors.PearGreen,
+                                            trackColor = QuickPearColors.SlateIndigo.copy(alpha = 0.3f),
+                                            modifier = Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(3.dp))
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -302,161 +428,219 @@ fun App(
 }
 
 @Composable
-fun NearbyDevicesTab(
-    devices: List<PeerDevice>,
-    selectedDevice: PeerDevice?,
-    trustedDevices: List<TrustedDevicesItemState>?,
-    isPairing: Boolean,
-    onDeviceSelected: (PeerDevice) -> Unit,
-    onPairClicked: (PeerDevice) -> Unit,
-    onSendClicked: (PeerDevice) -> Unit,
-    onSendTextClicked: (PeerDevice) -> Unit,
-    onStartWebShare: () -> Unit,
-    onRemotePairClicked: () -> Unit = {}
-) {
-    NearbyDevicesContent(
-        devices = devices,
-        selectedDevice = selectedDevice,
-        trustedDevices = trustedDevices ?: emptyList(),
-        isPairing = isPairing,
-        onDeviceSelected = onDeviceSelected,
-        onPairClicked = onPairClicked,
-        onSendClicked = onSendClicked,
-        onSendTextClicked = onSendTextClicked,
-        onStartWebShare = onStartWebShare,
-        onRemotePairClicked = onRemotePairClicked
-    )
-}
-
-typealias TrustedDevicesItemState = TrustedDevice
-
-@Composable
-private fun NearbyDevicesContent(
-    devices: List<PeerDevice>,
-    selectedDevice: PeerDevice?,
-    trustedDevices: List<TrustedDevice>,
-    isPairing: Boolean,
-    onDeviceSelected: (PeerDevice) -> Unit,
-    onPairClicked: (PeerDevice) -> Unit,
-    onSendClicked: (PeerDevice) -> Unit,
-    onSendTextClicked: (PeerDevice) -> Unit,
-    onStartWebShare: () -> Unit,
-    onRemotePairClicked: () -> Unit = {}
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        // Radar Visualization
-        RadarView(
-            devices = devices,
-            selectedDevice = selectedDevice,
-            onDeviceSelected = onDeviceSelected,
-            sizeDp = 220.dp
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Perangkat di Sekitar & Cloud (${devices.size})",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+private fun AppTabIcon(tab: AppTab, isSelected: Boolean) {
+    val color = if (isSelected) QuickPearColors.PearGreen else QuickPearColors.SlateMuted
+    Canvas(modifier = Modifier.size(22.dp)) {
+        when (tab) {
+            AppTab.NEARBY -> {
+                val center = Offset(size.width / 2f, size.height * 0.72f)
+                drawCircle(color = color, radius = 2.5.dp.toPx(), center = center)
+                drawArc(
+                    color = color,
+                    startAngle = 205f,
+                    sweepAngle = 130f,
+                    useCenter = false,
+                    topLeft = Offset(size.width * 0.22f, size.height * 0.22f),
+                    size = androidx.compose.ui.geometry.Size(size.width * 0.56f, size.height * 0.72f),
+                    style = Stroke(width = 2.dp.toPx())
                 )
-                Text(
-                    text = "Otomatis terhubung lintas Wi-Fi dan data seluler.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                drawArc(
+                    color = color,
+                    startAngle = 205f,
+                    sweepAngle = 130f,
+                    useCenter = false,
+                    topLeft = Offset(size.width * 0.04f, size.height * 0.04f),
+                    size = androidx.compose.ui.geometry.Size(size.width * 0.92f, size.height * 1.08f),
+                    style = Stroke(width = 2.dp.toPx())
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedButton(
-                    onClick = onRemotePairClicked,
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("Pasangkan Kode", fontSize = 11.sp)
+            AppTab.TRUSTED -> {
+                val path = ComposePath().apply {
+                    moveTo(size.width * 0.5f, size.height * 0.08f)
+                    lineTo(size.width * 0.88f, size.height * 0.24f)
+                    lineTo(size.width * 0.88f, size.height * 0.54f)
+                    cubicTo(
+                        size.width * 0.88f, size.height * 0.82f,
+                        size.width * 0.5f, size.height * 0.96f,
+                        size.width * 0.5f, size.height * 0.96f
+                    )
+                    cubicTo(
+                        size.width * 0.5f, size.height * 0.96f,
+                        size.width * 0.12f, size.height * 0.82f,
+                        size.width * 0.12f, size.height * 0.54f
+                    )
+                    lineTo(size.width * 0.12f, size.height * 0.24f)
+                    close()
                 }
+                drawPath(path, color = color, style = Stroke(width = 2.dp.toPx()))
+                drawCircle(color = color, radius = 2.2.dp.toPx(), center = Offset(size.width * 0.5f, size.height * 0.5f))
+            }
+            AppTab.SETTINGS -> {
+                drawLine(color, Offset(size.width * 0.12f, size.height * 0.32f), Offset(size.width * 0.88f, size.height * 0.32f), strokeWidth = 2.dp.toPx())
+                drawCircle(color, radius = 2.8.dp.toPx(), center = Offset(size.width * 0.36f, size.height * 0.32f))
+                drawLine(color, Offset(size.width * 0.12f, size.height * 0.68f), Offset(size.width * 0.88f, size.height * 0.68f), strokeWidth = 2.dp.toPx())
+                drawCircle(color, radius = 2.8.dp.toPx(), center = Offset(size.width * 0.64f, size.height * 0.68f))
+            }
+        }
+    }
+}
+
+// -------------------------------------------------------------
+// 1. NEARBY DEVICES SCREEN
+// -------------------------------------------------------------
+@Composable
+fun NearbyDevicesScreen(
+    devices: List<PeerDevice>,
+    selectedDevice: PeerDevice?,
+    trustedDevices: List<TrustedDevice>?,
+    isPairing: Boolean,
+    onDeviceSelected: (PeerDevice) -> Unit,
+    onPairClicked: (PeerDevice) -> Unit,
+    onSendClicked: (PeerDevice) -> Unit,
+    onSendTextClicked: (PeerDevice) -> Unit,
+    onStartWebShare: () -> Unit,
+    onRemotePairClicked: () -> Unit
+) {
+    val trustedList = trustedDevices ?: emptyList()
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // Quick Action Buttons Row
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Button(
-                    onClick = onStartWebShare,
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                    onClick = onRemotePairClicked,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = QuickPearColors.RoyalBlue),
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Text("Bagi Web (QR)", fontSize = 11.sp)
+                    Text("Pair with Code", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                }
+                OutlinedButton(
+                    onClick = onStartWebShare,
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, QuickPearColors.RoyalBlue),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD6E2FF)),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Web Share (QR)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
-
-        if (devices.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
+        // Compact Radar Pulse Section
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
+                border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.35f))
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = "Mencari perangkat terpercaya & sekitar...",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    RadarView(
+                        devices = devices,
+                        selectedDevice = selectedDevice,
+                        onDeviceSelected = onDeviceSelected,
+                        sizeDp = 140.dp
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = "Perangkat terpercaya otomatis muncul saat menyala di mana saja.",
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                        modifier = Modifier.padding(horizontal = 24.dp)
+                        text = if (devices.isEmpty()) "Scanning for nearby devices..." else "${devices.size} device(s) found",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = QuickPearColors.WarmGray
                     )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Button(
-                        onClick = onRemotePairClicked,
-                        shape = RoundedCornerShape(8.dp)
+                }
+            }
+        }
+
+        // Section Header
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Discovered Devices (${devices.size})",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = QuickPearColors.WarmCream
+                )
+                Text(
+                    text = "Auto-connected",
+                    fontSize = 11.sp,
+                    color = QuickPearColors.WarmGray
+                )
+            }
+        }
+
+        // Empty state or device list
+        if (devices.isEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
+                    border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.35f))
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text("Pasangkan Jarak Jauh (Beda Jaringan)", fontSize = 12.sp)
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedButton(
-                        onClick = onStartWebShare,
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("Bagi via Web / QR Code (Untuk iPhone & Tamu)", fontSize = 12.sp)
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(28.dp),
+                            color = QuickPearColors.PearGreen,
+                            strokeWidth = 2.5.dp
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "Looking for devices...",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp,
+                            color = QuickPearColors.WarmCream
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Make sure Quick Pear is open on your other devices. You can also pair across networks using a 6-digit code.",
+                            fontSize = 12.sp,
+                            color = QuickPearColors.WarmGray,
+                            textAlign = TextAlign.Center
+                        )
                     }
                 }
             }
         } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(devices) { peer ->
-                    val isTrusted = trustedDevices.any { it.id == peer.id }
-                    DiscoveredDeviceItem(
-                        peer = peer,
-                        isTrusted = isTrusted,
-                        isPairing = isPairing,
-                        onPair = { onPairClicked(peer) },
-                        onSend = { onSendClicked(peer) },
-                        onSendText = { onSendTextClicked(peer) }
-                    )
-                }
+            items(devices) { peer ->
+                val isTrusted = trustedList.any { it.id == peer.id }
+                DiscoveredDeviceCard(
+                    peer = peer,
+                    isTrusted = isTrusted,
+                    isPairing = isPairing,
+                    onPair = { onPairClicked(peer) },
+                    onSend = { onSendClicked(peer) },
+                    onSendText = { onSendTextClicked(peer) }
+                )
             }
         }
     }
 }
 
 @Composable
-fun DiscoveredDeviceItem(
+fun DiscoveredDeviceCard(
     peer: PeerDevice,
     isTrusted: Boolean,
     isPairing: Boolean,
@@ -467,100 +651,121 @@ fun DiscoveredDeviceItem(
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
+        border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.35f))
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp)
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = peer.name,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 16.sp
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        if (isTrusted) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(Color(0xFF10B981).copy(alpha = 0.15f))
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                            ) {
-                                Text(
-                                    text = "Terpercaya",
-                                    fontSize = 10.sp,
-                                    color = Color(0xFF059669),
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
+            // Header: Device name & connection tags
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = peer.name,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = QuickPearColors.WarmCream,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (isTrusted) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(QuickPearColors.PearGreen.copy(alpha = 0.2f))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "Trusted",
+                                fontSize = 10.sp,
+                                color = QuickPearColors.PearGreen,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
-
-                    Spacer(modifier = Modifier.height(2.dp))
-
-                    val connectionLabel = when (peer.connectionType) {
-                        ConnectionType.CLOUD_P2P -> "Cloud P2P"
-                        ConnectionType.LOCAL_HOTSPOT -> "Hotspot"
-                        ConnectionType.WIFI_DIRECT -> "Wi-Fi Direct"
-                        ConnectionType.LAN_WIFI -> "Wi-Fi Lokal"
-                        ConnectionType.BLE -> "BLE"
-                    }
-
-                    val deviceTypeLabel = when (peer.deviceType) {
-                        DeviceType.WINDOWS -> "Windows"
-                        DeviceType.ANDROID -> "Android"
-                        DeviceType.LINUX -> "Linux"
-                        DeviceType.MACOS -> "macOS"
-                        DeviceType.IOS -> "iOS"
-                        DeviceType.WEB -> "Web"
-                        DeviceType.UNKNOWN -> "Perangkat"
-                    }
-
-                    Text(
-                        text = "$deviceTypeLabel • $connectionLabel • ${peer.ipAddress}",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                    )
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (isTrusted) {
-                        Button(
-                            onClick = onSend,
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("Kirim Berkas", fontSize = 12.sp)
-                        }
-                        Spacer(modifier = Modifier.width(6.dp))
-                        OutlinedButton(
-                            onClick = onSendText,
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("Kirim Teks", fontSize = 12.sp)
-                        }
-                    } else {
-                        OutlinedButton(
-                            onClick = onSend,
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("Kirim", fontSize = 12.sp)
-                        }
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Button(
-                            onClick = onPair,
-                            enabled = !isPairing,
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("Pasangkan", fontSize = 12.sp)
-                        }
+                Spacer(modifier = Modifier.height(4.dp))
+
+                val connectionLabel = when (peer.connectionType) {
+                    ConnectionType.CLOUD_P2P -> "Cloud Relay"
+                    ConnectionType.LOCAL_HOTSPOT -> "Hotspot"
+                    ConnectionType.WIFI_DIRECT -> "Wi-Fi Direct"
+                    ConnectionType.LAN_WIFI -> "Local Wi-Fi"
+                    ConnectionType.BLE -> "BLE"
+                }
+
+                val deviceTypeLabel = when (peer.deviceType) {
+                    DeviceType.WINDOWS -> "Windows"
+                    DeviceType.ANDROID -> "Android"
+                    DeviceType.LINUX -> "Linux"
+                    DeviceType.MACOS -> "macOS"
+                    DeviceType.IOS -> "iOS"
+                    DeviceType.WEB -> "Web"
+                    DeviceType.UNKNOWN -> "Device"
+                }
+
+                Text(
+                    text = "$deviceTypeLabel • $connectionLabel • ${peer.ipAddress}",
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = QuickPearColors.WarmGray
+                )
+            }
+
+            // Action row placed underneath
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (isTrusted) {
+                    Button(
+                        onClick = onSend,
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = QuickPearColors.PearGreen),
+                        modifier = Modifier.weight(1.2f)
+                    ) {
+                        Text("Send", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                    }
+                    OutlinedButton(
+                        onClick = onSendText,
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.6f)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickPearColors.WarmCream),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Text", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = onSend,
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.6f)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickPearColors.WarmCream),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Send", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    Button(
+                        onClick = onPair,
+                        enabled = !isPairing,
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = QuickPearColors.RoyalBlue),
+                        modifier = Modifier.weight(1.2f)
+                    ) {
+                        Text(
+                            if (isPairing) "Pairing..." else "Pair",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White
+                        )
                     }
                 }
             }
@@ -568,125 +773,200 @@ fun DiscoveredDeviceItem(
     }
 }
 
+// -------------------------------------------------------------
+// 2. TRUSTED DEVICES SCREEN
+// -------------------------------------------------------------
 @Composable
-fun TrustedDevicesTab(
+fun TrustedDevicesScreen(
     trustedDevices: List<TrustedDevice>,
     onlineDevices: List<PeerDevice>,
     onSendClicked: (PeerDevice) -> Unit,
     onSendTextClicked: (PeerDevice) -> Unit,
+    onRename: (String, String) -> Unit,
     onRemove: (TrustedDevice) -> Unit,
-    onRemotePairClicked: () -> Unit = {}
+    onRemotePairClicked: () -> Unit
 ) {
     var deviceToDelete by remember { mutableStateOf<TrustedDevice?>(null) }
+    var deviceToRename by remember { mutableStateOf<TrustedDevice?>(null) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Daftar Perangkat Terpercaya (${trustedDevices.size})",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Transfer instan 1-klik tanpa konfirmasi lintas jaringan.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                )
-            }
-            Button(
-                onClick = onRemotePairClicked,
-                shape = RoundedCornerShape(8.dp)
+        // Header
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("+ Pasangkan Baru", fontSize = 11.sp)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Trusted Devices (${trustedDevices.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = QuickPearColors.WarmCream
+                    )
+                    Text(
+                        text = "Instant 1-click sharing without repetitive prompts.",
+                        fontSize = 11.sp,
+                        color = QuickPearColors.WarmGray
+                    )
+                }
+                Button(
+                    onClick = onRemotePairClicked,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = QuickPearColors.RoyalBlue)
+                ) {
+                    Text("+ Pair New", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                }
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
         if (trustedDevices.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(24.dp)
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
+                    border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.35f))
                 ) {
-                    Text(
-                        text = "Belum Ada Perangkat Terpercaya",
-                        fontWeight = FontWeight.SemiBold,
-                        style = MaterialTheme.typography.titleSmall
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Pasangkan perangkat Anda yang lain (Laptop, HP, Tablet) untuk transfer berkas instan kapan saja tanpa perlu konfirmasi lagi.",
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Button(
-                        onClick = onRemotePairClicked,
-                        shape = RoundedCornerShape(8.dp)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text("Pasangkan Perangkat (Kode 6-Angka)", fontSize = 12.sp)
+                        Text(
+                            text = "No Trusted Devices Yet",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            color = QuickPearColors.WarmCream
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Pair your computer, phone, or tablet once to enable instant wireless transfers anytime without confirmation prompts.",
+                            fontSize = 12.sp,
+                            color = QuickPearColors.WarmGray,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Button(
+                            onClick = onRemotePairClicked,
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = QuickPearColors.RoyalBlue)
+                        ) {
+                            Text("Pair with 6-Digit Code", fontSize = 12.sp, color = Color.White)
+                        }
                     }
                 }
             }
         } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(trustedDevices) { device ->
-                    val onlinePeer = onlineDevices.firstOrNull { it.id == device.id }
-                    val isOnline = onlinePeer != null
-                    val peerToSend = onlinePeer ?: device.lastKnownIp?.let { ip ->
-                        PeerDevice(
-                            id = device.id,
-                            name = device.name,
-                            ipAddress = ip,
-                            port = device.lastKnownPort,
-                            deviceType = DeviceType.UNKNOWN,
-                            connectionType = ConnectionType.LAN_WIFI
-                        )
-                    } ?: PeerDevice(
+            items(trustedDevices) { device ->
+                val onlinePeer = onlineDevices.firstOrNull { it.id == device.id }
+                val isOnline = onlinePeer != null
+                val peerToSend = onlinePeer ?: device.lastKnownIp?.let { ip ->
+                    PeerDevice(
                         id = device.id,
                         name = device.name,
-                        ipAddress = "cloud-relay",
-                        port = 0,
+                        ipAddress = ip,
+                        port = device.lastKnownPort,
                         deviceType = DeviceType.UNKNOWN,
-                        connectionType = ConnectionType.CLOUD_P2P
+                        connectionType = ConnectionType.LAN_WIFI
                     )
-                    TrustedDeviceItem(
-                        device = device,
-                        isOnline = isOnline,
-                        onSend = { onSendClicked(peerToSend) },
-                        onSendText = { onSendTextClicked(peerToSend) },
-                        onDelete = { deviceToDelete = device }
-                    )
-                }
+                } ?: PeerDevice(
+                    id = device.id,
+                    name = device.name,
+                    ipAddress = "cloud-relay",
+                    port = 0,
+                    deviceType = DeviceType.UNKNOWN,
+                    connectionType = ConnectionType.CLOUD_P2P
+                )
+
+                TrustedDeviceCard(
+                    device = device,
+                    isOnline = isOnline,
+                    onSend = { onSendClicked(peerToSend) },
+                    onSendText = { onSendTextClicked(peerToSend) },
+                    onRename = { deviceToRename = device },
+                    onDelete = { deviceToDelete = device }
+                )
             }
         }
     }
 
-    // Delete confirmation dialog
+    // Rename Device Dialog
+    deviceToRename?.let { device ->
+        var renameInput by remember { mutableStateOf(device.name) }
+        AlertDialog(
+            onDismissRequest = { deviceToRename = null },
+            containerColor = QuickPearColors.SurfaceDark,
+            title = {
+                Text("Rename Trusted Device", color = QuickPearColors.WarmCream, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "Enter a custom name for this trusted device:",
+                        fontSize = 12.sp,
+                        color = QuickPearColors.WarmGray
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = renameInput,
+                        onValueChange = { renameInput = it },
+                        singleLine = true,
+                        placeholder = { Text("Device name", color = QuickPearColors.SlateMuted) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = QuickPearColors.WarmCream,
+                            unfocusedTextColor = QuickPearColors.WarmCream,
+                            focusedBorderColor = QuickPearColors.PearGreen,
+                            unfocusedBorderColor = QuickPearColors.SlateIndigo
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (renameInput.isNotBlank()) {
+                            onRename(device.id, renameInput.trim())
+                            deviceToRename = null
+                        }
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = QuickPearColors.PearGreen)
+                ) {
+                    Text("Save", color = Color.White)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { deviceToRename = null },
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, QuickPearColors.SlateIndigo),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickPearColors.WarmCream)
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Delete Confirmation Dialog
     deviceToDelete?.let { target ->
         AlertDialog(
             onDismissRequest = { deviceToDelete = null },
-            title = { Text("Hapus Perangkat Terpercaya?") },
+            containerColor = QuickPearColors.SurfaceDark,
+            title = { Text("Remove Trusted Device?", color = QuickPearColors.WarmCream, fontWeight = FontWeight.Bold) },
             text = {
-                Text("Apakah Anda yakin ingin menghapus '${target.name}' dari daftar terpercaya? Anda harus mengonfirmasi secara manual jika perangkat ini mengirim berkas nanti.")
+                Text(
+                    text = "Are you sure you want to remove '${target.name}' from your trusted devices? Future transfers will require manual confirmation.",
+                    fontSize = 13.sp,
+                    color = QuickPearColors.WarmGray
+                )
             },
             confirmButton = {
                 Button(
@@ -694,14 +974,20 @@ fun TrustedDevicesTab(
                         onRemove(target)
                         deviceToDelete = null
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350)),
+                    shape = RoundedCornerShape(8.dp)
                 ) {
-                    Text("Hapus", color = MaterialTheme.colorScheme.onError)
+                    Text("Remove", color = Color.White)
                 }
             },
             dismissButton = {
-                OutlinedButton(onClick = { deviceToDelete = null }) {
-                    Text("Batal")
+                OutlinedButton(
+                    onClick = { deviceToDelete = null },
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, QuickPearColors.SlateIndigo),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickPearColors.WarmCream)
+                ) {
+                    Text("Cancel")
                 }
             }
         )
@@ -709,199 +995,241 @@ fun TrustedDevicesTab(
 }
 
 @Composable
-fun TrustedDeviceItem(
+fun TrustedDeviceCard(
     device: TrustedDevice,
     isOnline: Boolean,
-    onSend: (() -> Unit)? = null,
-    onSendText: (() -> Unit)? = null,
+    onSend: () -> Unit,
+    onSendText: () -> Unit,
+    onRename: () -> Unit,
     onDelete: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
+        border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.35f))
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+            // Top Row: Device Name, Online Status Badge, and Delete Button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Text(
                         text = device.name,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 16.sp
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = QuickPearColors.WarmCream
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Box(
                         modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(if (isOnline) Color(0xFF10B981) else Color.Gray)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = if (isOnline) "Online" else "Offline",
-                        fontSize = 11.sp,
-                        color = if (isOnline) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                    )
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(
+                                if (isOnline) QuickPearColors.PearGreen.copy(alpha = 0.2f)
+                                else QuickPearColors.SlateMuted.copy(alpha = 0.2f)
+                            )
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isOnline) QuickPearColors.PearGreen else Color.Gray)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (isOnline) "Online" else "Offline",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (isOnline) QuickPearColors.PearGreen else QuickPearColors.WarmGray
+                            )
+                        }
+                    }
                 }
-                val addressText = if (device.lastKnownIp != null) {
-                    "Terkoneksi: ${device.lastKnownIp}:${device.lastKnownPort}"
-                } else {
-                    "ID: ${device.id.take(12)}..."
-                }
-                Text(
-                    text = addressText,
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                )
-            }
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                if (onSend != null) {
-                    Button(
-                        onClick = onSend,
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text(if (isOnline) "Kirim Berkas" else "Kirim", fontSize = 12.sp)
-                    }
-                }
-                if (onSendText != null) {
-                    OutlinedButton(
-                        onClick = onSendText,
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("Teks", fontSize = 12.sp)
-                    }
-                }
+                // Compact Remove Button at the top-right
                 OutlinedButton(
                     onClick = onDelete,
                     shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    )
+                    border = BorderStroke(1.dp, Color(0xFFEF5350).copy(alpha = 0.4f)),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF5350)),
+                    modifier = Modifier.size(30.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
                 ) {
-                    Text("Hapus", fontSize = 12.sp)
+                    Text("✕", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            // Middle Subtitle: ID or Last IP
+            val addressText = if (device.lastKnownIp != null) {
+                "Last IP: ${device.lastKnownIp}:${device.lastKnownPort}"
+            } else {
+                "Device ID: ${device.id}"
+            }
+            Text(
+                text = addressText,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                color = QuickPearColors.WarmGray
+            )
+
+            // Bottom Action Row: Send, Text, Rename placed neatly below name & ID
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = onSend,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = QuickPearColors.PearGreen),
+                    modifier = Modifier.weight(1.2f)
+                ) {
+                    Text("Send", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                }
+                OutlinedButton(
+                    onClick = onSendText,
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.6f)),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickPearColors.WarmCream),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Text", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+                OutlinedButton(
+                    onClick = onRename,
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.6f)),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD6E2FF)),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Rename", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
     }
 }
 
+// -------------------------------------------------------------
+// 3. SETTINGS SCREEN
+// -------------------------------------------------------------
 @Composable
-fun SettingsTab(
+fun SettingsScreen(
     deviceName: String,
     deviceId: String,
     localIpAddress: String,
     allLocalIpAddresses: List<String> = emptyList(),
     localPort: Int,
     mode: DiscoveryMode,
-    onModeChange: (DiscoveryMode) -> Unit
+    onModeChange: (DiscoveryMode) -> Unit,
+    trustedCount: Int = 0,
+    onClearTrustedDevices: () -> Unit = {}
 ) {
+    val scrollState = rememberScrollState()
+    var showClearConfirm by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
+            .verticalScroll(scrollState)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Text(
-            text = "Informasi & Pengaturan",
+            text = "Information & Settings",
             style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.Bold,
+            color = QuickPearColors.WarmCream
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
-
+        // Device & Network Status Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
+            border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.35f))
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    text = "Status Konektivitas Quick Pear",
+                    text = "Quick Pear Connectivity Status",
                     fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
+                    fontSize = 13.sp,
+                    color = QuickPearColors.WarmCream
                 )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(text = "Nama Perangkat: $deviceName", fontSize = 13.sp)
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(text = "Device Name: $deviceName", fontSize = 12.sp, color = QuickPearColors.WarmCream)
                 Text(
-                    text = "ID Kriptografi: ${deviceId.take(24)}...",
-                    fontSize = 12.sp,
+                    text = "Cryptographic ID: ${deviceId.take(24)}...",
+                    fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    color = QuickPearColors.WarmGray
                 )
-                Spacer(modifier = Modifier.height(6.dp))
                 val ipDisplay = if (allLocalIpAddresses.isNotEmpty()) {
                     allLocalIpAddresses.joinToString(" • ") { "$it:$localPort" }
                 } else {
                     "${if (localIpAddress.isNotBlank()) localIpAddress else "127.0.0.1"}:$localPort"
                 }
                 Text(
-                    text = "Alamat Lokal: $ipDisplay",
-                    fontSize = 12.sp,
+                    text = "Local Address: $ipDisplay",
+                    fontSize = 11.sp,
                     fontWeight = FontWeight.Medium,
                     fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.primary
+                    color = Color(0xFF90CAF9)
                 )
-                Spacer(modifier = Modifier.height(6.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(text = "Cloud Hybrid Signaling: ", fontSize = 11.sp, color = QuickPearColors.WarmGray)
                     Text(
-                        text = "Cloud Hybrid Signaling: ",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-                    )
-                    Text(
-                        text = "Aktif (Google STUN + Cloud Presence)",
-                        fontSize = 12.sp,
+                        text = "Active (STUN + Cloud Presence)",
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFF059669)
+                        color = QuickPearColors.PearGreen
                     )
                 }
-                Spacer(modifier = Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "Dukungan Apple: ",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-                    )
+                    Text(text = "Apple Ecosystem: ", fontSize = 11.sp, color = QuickPearColors.WarmGray)
                     Text(
                         text = "macOS (.dmg) & iOS (Web Portal)",
-                        fontSize = 12.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary
+                        color = Color(0xFFD6E2FF)
                     )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
+        // Discovery Mode Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
+            border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.35f))
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "Mode Penemuan (Discovery)",
+                    text = "Discovery Beacon Mode",
                     fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
+                    fontSize = 13.sp,
+                    color = QuickPearColors.WarmCream
                 )
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Interval broadcast beacon untuk efisiensi daya:",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    text = "Broadcast frequency for power and battery optimization:",
+                    fontSize = 11.sp,
+                    color = QuickPearColors.WarmGray
                 )
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -910,58 +1238,161 @@ fun SettingsTab(
                     DiscoveryMode.entries.forEach { entry ->
                         val isSelected = mode == entry
                         val label = when (entry) {
-                            DiscoveryMode.ACTIVE -> "Aktif (3s)"
-                            DiscoveryMode.BACKGROUND -> "Latar Belakang (20s)"
-                            DiscoveryMode.POWER_SAVER -> "Hemat Daya (60s)"
+                            DiscoveryMode.ACTIVE -> "Active (3s)"
+                            DiscoveryMode.BACKGROUND -> "Background (20s)"
+                            DiscoveryMode.POWER_SAVER -> "Power Saver (60s)"
                         }
                         Button(
                             onClick = { onModeChange(entry) },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface
+                                containerColor = if (isSelected) QuickPearColors.PearGreen else QuickPearColors.SurfaceDark,
+                                contentColor = if (isSelected) Color.White else QuickPearColors.WarmGray
                             ),
+                            border = if (!isSelected) BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.5f)) else null,
                             shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text(
-                                text = label,
-                                fontSize = 10.sp,
-                                color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
-                            )
+                            Text(text = label, fontSize = 10.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
                         }
                     }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
+        // Storage & Clean Uninstall Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
+            border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.35f))
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Storage & App Data",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = QuickPearColors.WarmCream
+                )
+                Text(
+                    text = "Trusted devices and cryptographic pairings are stored locally in this device's AppData.",
+                    fontSize = 11.sp,
+                    color = QuickPearColors.WarmGray
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Saved Devices: $trustedCount",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = QuickPearColors.WarmCream
+                    )
+                    OutlinedButton(
+                        onClick = { showClearConfirm = true },
+                        enabled = trustedCount > 0,
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, Color(0xFFEF5350).copy(alpha = 0.5f)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF5350))
+                    ) {
+                        Text("Clear All Devices", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(2.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(QuickPearColors.SlateIndigo.copy(alpha = 0.25f))
+                )
+
+                Text(
+                    text = "Clean Uninstall & Windows Cleanup",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
+                    color = QuickPearColors.WarmCream
+                )
+                Text(
+                    text = "To completely remove the Explorer right-click context menu, SendTo shortcut, Autostart entries, and wipe all local data, run the generated 'clean-uninstall.cmd' utility.",
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp,
+                    color = QuickPearColors.WarmGray
+                )
+            }
+        }
+
+        // Features Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
+            border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.35f))
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "Fitur Unggulan Quick Pear",
+                    text = "Key Features",
                     fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
+                    fontSize = 13.sp,
+                    color = QuickPearColors.WarmCream
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "• Otomatis & Bebas Login: Tanpa kata sandi atau akun. Perangkat terpercaya otomatis saling terhubung.\n" +
-                            "• Lintas Jaringan: Temukan dan kirim berkas walau berbeda jaringan (misal PC di Wi-Fi rumah, HP di paket data 4G/5G).\n" +
-                            "• Bagi Cepat Web (Apple / Tamu): Bagikan berkas ke iPhone, iPad, atau komputer tamu tanpa mereka harus instal aplikasi cukup scan QR Code!\n" +
-                            "• Kirim Teks / Clipboard: Salin tautan atau catatan di satu perangkat dan langsung kirim ke perangkat lain.\n" +
-                            "• Transfer Folder: Struktur folder dan sub-folder dipertahankan utuh.",
-                    fontSize = 12.sp,
-                    lineHeight = 18.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+                    text = "• Zero-Login & Auto-Connect: No passwords or accounts. Trusted devices pair once and stay connected.\n" +
+                            "• Cross-Network Ready: Transfer files even when devices are on different networks (e.g., home Wi-Fi to 5G cellular).\n" +
+                            "• Instant Web Share: Share files with iPhone, iPad, or guest computers via quick QR scan without installing apps.\n" +
+                            "• Text & Clipboard Sharing: Send notes, links, or code snippets instantly between devices.\n" +
+                            "• Folder Preservation: Full folder structures and nested subdirectories are transferred intact.",
+                    fontSize = 11.sp,
+                    lineHeight = 17.sp,
+                    color = QuickPearColors.WarmGray
                 )
             }
         }
     }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            containerColor = QuickPearColors.SurfaceDark,
+            title = { Text("Clear All Trusted Devices?", color = QuickPearColors.WarmCream, fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "Are you sure you want to remove all $trustedCount trusted devices? You will need to pair again to transfer files without confirmation.",
+                    fontSize = 13.sp,
+                    color = QuickPearColors.WarmGray
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onClearTrustedDevices()
+                        showClearConfirm = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Clear All", color = Color.White)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { showClearConfirm = false },
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, QuickPearColors.SlateIndigo),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickPearColors.WarmCream)
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
+// -------------------------------------------------------------
+// DIALOGS
+// -------------------------------------------------------------
 @Composable
 fun PairingConfirmationDialog(
     pairing: PairingUiState,
@@ -973,74 +1404,63 @@ fun PairingConfirmationDialog(
 
     AlertDialog(
         onDismissRequest = onReject,
+        containerColor = QuickPearColors.SurfaceDark,
         title = {
-            Text(text = "Konfirmasi Pemasangan")
+            Text("Confirm Pairing", color = QuickPearColors.WarmCream, fontWeight = FontWeight.Bold)
         },
         text = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+            Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Pairing with:", fontSize = 12.sp, color = QuickPearColors.WarmGray)
+                Text(pairing.peer.name, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = QuickPearColors.WarmCream)
+                Spacer(modifier = Modifier.height(14.dp))
                 Text(
-                    text = "Memasangkan dengan:",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Text(
-                    text = pairing.peer.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Text(
-                    text = "Cocokkan kode angka berikut dengan layar perangkat tujuan:",
-                    style = MaterialTheme.typography.bodySmall,
+                    "Compare this 6-digit code with the screen of the other device:",
+                    fontSize = 12.sp,
                     textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    color = QuickPearColors.WarmGray
                 )
-
                 Spacer(modifier = Modifier.height(12.dp))
-
                 Card(
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                    shape = RoundedCornerShape(10.dp),
+                    colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
+                    border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.5f))
                 ) {
                     Text(
                         text = formattedCode,
-                        fontSize = 32.sp,
+                        fontSize = 30.sp,
                         fontWeight = FontWeight.ExtraBold,
                         fontFamily = FontFamily.Monospace,
                         letterSpacing = 4.sp,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)
+                        color = QuickPearColors.PearGreen,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp)
                     )
                 }
-
                 Spacer(modifier = Modifier.height(12.dp))
-
                 Text(
-                    text = "Jika kode sama, perangkat akan otomatis ditambahkan ke daftar terpercaya.",
-                    style = MaterialTheme.typography.bodySmall,
+                    "If the codes match, this device will be added to your trusted devices list.",
+                    fontSize = 11.sp,
                     textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    color = QuickPearColors.WarmGray
                 )
             }
         },
         confirmButton = {
             Button(
                 onClick = onConfirm,
-                shape = RoundedCornerShape(8.dp)
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = QuickPearColors.PearGreen)
             ) {
-                Text("Cocok & Percayai")
+                Text("Match & Trust", color = Color.White)
             }
         },
         dismissButton = {
             OutlinedButton(
                 onClick = onReject,
-                shape = RoundedCornerShape(8.dp)
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(1.dp, QuickPearColors.SlateIndigo),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickPearColors.WarmCream)
             ) {
-                Text("Batal")
+                Text("Cancel")
             }
         }
     )
@@ -1056,40 +1476,45 @@ fun SendTextDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Kirim Teks ke $targetName") },
+        containerColor = QuickPearColors.SurfaceDark,
+        title = { Text("Send Text to $targetName", color = QuickPearColors.WarmCream, fontWeight = FontWeight.Bold) },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = "Ketik atau tempel teks dari papan klip untuk dikirim langsung:",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                )
-                Spacer(modifier = Modifier.height(12.dp))
+                Text("Type or paste text to send directly:", fontSize = 12.sp, color = QuickPearColors.WarmGray)
+                Spacer(modifier = Modifier.height(10.dp))
                 OutlinedTextField(
                     value = textInput,
                     onValueChange = { textInput = it },
-                    placeholder = { Text("Masukkan teks di sini...") },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(120.dp),
+                    placeholder = { Text("Enter text here...", color = QuickPearColors.SlateMuted) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = QuickPearColors.WarmCream,
+                        unfocusedTextColor = QuickPearColors.WarmCream,
+                        focusedBorderColor = QuickPearColors.PearGreen,
+                        unfocusedBorderColor = QuickPearColors.SlateIndigo
+                    ),
+                    modifier = Modifier.fillMaxWidth().height(120.dp),
                     maxLines = 5
                 )
             }
         },
         confirmButton = {
             Button(
-                onClick = {
-                    if (textInput.isNotBlank()) onSend(textInput)
-                },
+                onClick = { if (textInput.isNotBlank()) onSend(textInput) },
                 enabled = textInput.isNotBlank(),
-                shape = RoundedCornerShape(8.dp)
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = QuickPearColors.PearGreen)
             ) {
-                Text("Kirim Teks")
+                Text("Send Text", color = Color.White)
             }
         },
         dismissButton = {
-            OutlinedButton(onClick = onDismiss, shape = RoundedCornerShape(8.dp)) {
-                Text("Batal")
+            OutlinedButton(
+                onClick = onDismiss,
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(1.dp, QuickPearColors.SlateIndigo),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickPearColors.WarmCream)
+            ) {
+                Text("Cancel")
             }
         }
     )
@@ -1103,25 +1528,30 @@ fun IncomingTextDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Teks Diterima dari $senderName") },
+        containerColor = QuickPearColors.SurfaceDark,
+        title = { Text("Text Received from $senderName", color = QuickPearColors.WarmCream, fontWeight = FontWeight.Bold) },
         text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                ) {
-                    Text(
-                        text = text,
-                        modifier = Modifier.padding(14.dp),
-                        fontSize = 14.sp
-                    )
-                }
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
+                border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.4f))
+            ) {
+                Text(
+                    text = text,
+                    modifier = Modifier.padding(14.dp),
+                    fontSize = 13.sp,
+                    color = QuickPearColors.WarmCream
+                )
             }
         },
         confirmButton = {
-            Button(onClick = onDismiss, shape = RoundedCornerShape(8.dp)) {
-                Text("Selesai")
+            Button(
+                onClick = onDismiss,
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = QuickPearColors.PearGreen)
+            ) {
+                Text("Done", color = Color.White)
             }
         }
     )
@@ -1136,62 +1566,57 @@ fun WebShareQrDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = {
-            Text(text = "Mode Bagi Web (Apple & Tamu)")
-        },
+        containerColor = QuickPearColors.SurfaceDark,
+        title = { Text("Web Share (Apple & Guests)", color = QuickPearColors.WarmCream, fontWeight = FontWeight.Bold) },
         text = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+            Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = "Buka kamera iPhone / perangkat tamu dan scan kode QR di bawah untuk mengunduh:",
-                    style = MaterialTheme.typography.bodySmall,
+                    "Scan this QR code with your iPhone camera or guest browser to download:",
+                    fontSize = 12.sp,
                     textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    color = QuickPearColors.WarmGray
                 )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // QR Code
-                QrCodeView(
-                    content = url,
-                    size = 190.dp
-                )
-
                 Spacer(modifier = Modifier.height(14.dp))
-
+                // QR Code on a clean card
+                Card(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    modifier = Modifier.padding(4.dp)
+                ) {
+                    Box(modifier = Modifier.padding(10.dp)) {
+                        QrCodeView(content = url, size = 170.dp)
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
                 Text(
                     text = url,
-                    fontSize = 14.sp,
+                    fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.primary
+                    color = Color(0xFF90CAF9)
                 )
-
                 if (hotspotInfo != null) {
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                        colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
+                        border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.5f)),
                         shape = RoundedCornerShape(8.dp)
                     ) {
                         Text(
-                            text = "Hotspot Mandiri Aktif:\n$hotspotInfo",
-                            style = MaterialTheme.typography.bodySmall,
+                            text = "Hotspot Active: $hotspotInfo",
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            color = Color(0xFFD6E2FF),
                             textAlign = TextAlign.Center,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                         )
                     }
                 }
-
                 Spacer(modifier = Modifier.height(6.dp))
-
                 Text(
-                    text = "Membagikan ${files.size} berkas secara instan.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    text = "Sharing ${files.size} file(s) instantly.",
+                    fontSize = 11.sp,
+                    color = QuickPearColors.WarmGray
                 )
             }
         },
@@ -1199,9 +1624,9 @@ fun WebShareQrDialog(
             Button(
                 onClick = onDismiss,
                 shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                colors = ButtonDefaults.buttonColors(containerColor = QuickPearColors.RoyalBlue)
             ) {
-                Text("Hentikan Berbagi")
+                Text("Stop Sharing", color = Color.White)
             }
         }
     )
@@ -1224,74 +1649,61 @@ fun RemotePairDialog(
 
         AlertDialog(
             onDismissRequest = { onConfirmSas(false) },
-            title = {
-                Text(text = "Konfirmasi Keamanan (SAS)")
-            },
+            containerColor = QuickPearColors.SurfaceDark,
+            title = { Text("Security Verification (SAS)", color = QuickPearColors.WarmCream, fontWeight = FontWeight.Bold) },
             text = {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
+                Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Connected to:", fontSize = 12.sp, color = QuickPearColors.WarmGray)
+                    Text(pendingSas.peerName, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = QuickPearColors.WarmCream)
+                    Spacer(modifier = Modifier.height(14.dp))
                     Text(
-                        text = "Terhubung dengan perangkat:",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Text(
-                        text = pendingSas.peerName,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Text(
-                        text = "Pastikan kode keamanan angka berikut SAMA dengan yang ada di layar perangkat tersebut:",
-                        style = MaterialTheme.typography.bodySmall,
+                        "Verify that this security code matches the code on the remote screen:",
+                        fontSize = 12.sp,
                         textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        color = QuickPearColors.WarmGray
                     )
-
                     Spacer(modifier = Modifier.height(12.dp))
-
                     Card(
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
+                        border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.5f))
                     ) {
                         Text(
                             text = formattedCode,
-                            fontSize = 32.sp,
+                            fontSize = 30.sp,
                             fontWeight = FontWeight.ExtraBold,
                             fontFamily = FontFamily.Monospace,
                             letterSpacing = 4.sp,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)
+                            color = QuickPearColors.PearGreen,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp)
                         )
                     }
-
                     Spacer(modifier = Modifier.height(12.dp))
-
                     Text(
-                        text = "Jika kode sama persis, tekan 'Cocok & Percayai'. Setelah ini, transfer akan otomatis tanpa kode lagi!",
-                        style = MaterialTheme.typography.bodySmall,
+                        "If identical, click 'Match & Trust'. Both devices will stay paired automatically in the future!",
+                        fontSize = 11.sp,
                         textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        color = QuickPearColors.WarmGray
                     )
                 }
             },
             confirmButton = {
                 Button(
                     onClick = { onConfirmSas(true) },
-                    shape = RoundedCornerShape(8.dp)
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = QuickPearColors.PearGreen)
                 ) {
-                    Text("Cocok & Percayai")
+                    Text("Match & Trust", color = Color.White)
                 }
             },
             dismissButton = {
                 OutlinedButton(
                     onClick = { onConfirmSas(false) },
-                    shape = RoundedCornerShape(8.dp)
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, QuickPearColors.SlateIndigo),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickPearColors.WarmCream)
                 ) {
-                    Text("Tolak")
+                    Text("Decline")
                 }
             }
         )
@@ -1303,17 +1715,13 @@ fun RemotePairDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = {
-            Text(text = "Pasangkan Jarak Jauh (Beda Jaringan)")
-        },
+        containerColor = QuickPearColors.SurfaceDark,
+        title = { Text("Remote Pairing (Cross-Network)", color = QuickPearColors.WarmCream, fontWeight = FontWeight.Bold) },
         text = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+            Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 TabRow(
                     selectedTabIndex = selectedMode,
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    containerColor = QuickPearColors.CardSurface
                 ) {
                     Tab(
                         selected = selectedMode == 0,
@@ -1323,7 +1731,14 @@ fun RemotePairDialog(
                                 selectedMode = 0
                             }
                         },
-                        text = { Text("Tampilkan Kode", fontSize = 12.sp) }
+                        text = {
+                            Text(
+                                "Display Code",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = if (selectedMode == 0) QuickPearColors.PearGreen else QuickPearColors.WarmGray
+                            )
+                        }
                     )
                     Tab(
                         selected = selectedMode == 1,
@@ -1333,89 +1748,93 @@ fun RemotePairDialog(
                                 selectedMode = 1
                             }
                         },
-                        text = { Text("Masukkan Kode", fontSize = 12.sp) }
+                        text = {
+                            Text(
+                                "Enter Code",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = if (selectedMode == 1) QuickPearColors.PearGreen else QuickPearColors.WarmGray
+                            )
+                        }
                     )
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 if (selectedMode == 0) {
                     val code = generatedCode ?: "------"
                     val formattedCode = if (code.length == 6) "${code.take(3)} ${code.takeLast(3)}" else code
 
                     Text(
-                        text = "Bagikan kode ini ke perangkat lain untuk menghubungkan lintas jaringan:",
-                        style = MaterialTheme.typography.bodySmall,
+                        text = "Share this 6-digit code with your other device to connect across networks:",
+                        fontSize = 12.sp,
                         textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        color = QuickPearColors.WarmGray
                     )
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
+                    Spacer(modifier = Modifier.height(12.dp))
                     Card(
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
+                        border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.5f))
                     ) {
                         Text(
                             text = formattedCode,
-                            fontSize = 34.sp,
+                            fontSize = 32.sp,
                             fontWeight = FontWeight.ExtraBold,
                             fontFamily = FontFamily.Monospace,
                             letterSpacing = 4.sp,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)
+                            color = QuickPearColors.PearGreen,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp)
                         )
                     }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
+                    Spacer(modifier = Modifier.height(14.dp))
                     if (isPairingInProgress) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = QuickPearColors.PearGreen)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Menunggu sambungan dari perangkat lain...",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
+                            Text("Waiting for connection...", fontSize = 12.sp, color = QuickPearColors.PearGreen)
                         }
-                        Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
                         OutlinedButton(
                             onClick = onCancelPairing,
-                            shape = RoundedCornerShape(8.dp)
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, QuickPearColors.SlateIndigo),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickPearColors.WarmCream)
                         ) {
-                            Text("Hentikan Menunggu", fontSize = 12.sp)
+                            Text("Stop Waiting", fontSize = 11.sp)
                         }
                     } else {
                         Button(
                             onClick = onStartHost,
                             shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = QuickPearColors.RoyalBlue),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Mulai Menunggu Sambungan")
+                            Text("Start Waiting for Connection", color = Color.White)
                         }
                     }
                 } else {
                     Text(
-                        text = "Masukkan kode 6-angka yang tertera di layar perangkat tujuan:",
-                        style = MaterialTheme.typography.bodySmall,
+                        text = "Enter the 6-digit code shown on the target device:",
+                        fontSize = 12.sp,
                         textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        color = QuickPearColors.WarmGray
                     )
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
+                    Spacer(modifier = Modifier.height(12.dp))
                     OutlinedTextField(
                         value = clientCodeInput,
                         onValueChange = { input ->
                             val filtered = input.filter { it.isDigit() }.take(6)
                             clientCodeInput = filtered
                         },
-                        placeholder = { Text("Contoh: 123456", textAlign = TextAlign.Center) },
+                        placeholder = { Text("e.g. 123456", textAlign = TextAlign.Center, color = QuickPearColors.SlateMuted) },
                         singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = QuickPearColors.WarmCream,
+                            unfocusedTextColor = QuickPearColors.WarmCream,
+                            focusedBorderColor = QuickPearColors.RoyalBlue,
+                            unfocusedBorderColor = QuickPearColors.SlateIndigo
+                        ),
                         modifier = Modifier.fillMaxWidth(),
                         textStyle = MaterialTheme.typography.titleMedium.copy(
                             textAlign = TextAlign.Center,
@@ -1423,56 +1842,45 @@ fun RemotePairDialog(
                             letterSpacing = 2.sp
                         )
                     )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
+                    Spacer(modifier = Modifier.height(14.dp))
                     if (isPairingInProgress) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = QuickPearColors.RoyalBlue)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Menghubungkan ke perangkat tujuan...",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
+                            Text("Connecting to device...", fontSize = 12.sp, color = QuickPearColors.RoyalBlue)
                         }
-                        Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
                         OutlinedButton(
                             onClick = onCancelPairing,
-                            shape = RoundedCornerShape(8.dp)
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, QuickPearColors.SlateIndigo),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickPearColors.WarmCream)
                         ) {
-                            Text("Batal", fontSize = 12.sp)
+                            Text("Cancel", fontSize = 11.sp)
                         }
                     } else {
                         Button(
                             onClick = { onJoinClient(clientCodeInput) },
                             enabled = clientCodeInput.length == 6,
                             shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = QuickPearColors.RoyalBlue),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Hubungkan & Pasangkan")
+                            Text("Connect & Pair", color = Color.White)
                         }
                     }
                 }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Text(
-                    text = "Pemasangan hanya dilakukan 1x. Setelah dipasangkan, kedua perangkat akan selalu saling terhubung otomatis.",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontSize = 11.sp,
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                )
             }
         },
         confirmButton = {},
         dismissButton = {
-            OutlinedButton(onClick = onDismiss, shape = RoundedCornerShape(8.dp)) {
-                Text("Tutup")
+            OutlinedButton(
+                onClick = onDismiss,
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(1.dp, QuickPearColors.SlateIndigo),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickPearColors.WarmCream)
+            ) {
+                Text("Close")
             }
         }
     )

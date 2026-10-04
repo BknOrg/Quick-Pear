@@ -76,8 +76,24 @@ class TrustStore(
         save()
     }
 
+    fun rename(deviceId: String, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) return
+        _devices.update { list ->
+            list.map {
+                if (it.id == deviceId) it.copy(name = trimmed) else it
+            }
+        }
+        save()
+    }
+
     fun remove(deviceId: String) {
         _devices.update { list -> list.filterNot { it.id == deviceId } }
+        save()
+    }
+
+    fun clear() {
+        _devices.update { emptyList() }
         save()
     }
 

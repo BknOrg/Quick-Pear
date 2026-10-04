@@ -1,5 +1,7 @@
 package com.app.quickpear
 
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -9,9 +11,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Tray
 import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
+import androidx.compose.ui.window.rememberWindowState
 import com.app.quickpear.discovery.DiscoveryMode
 import com.app.quickpear.domain.DeviceType
 import com.app.quickpear.domain.FileMetadata
@@ -82,6 +88,7 @@ fun main(args: Array<String>) {
         try {
             SendToInstaller.ensureInstalled()
             WindowsContextMenuRegistry.ensureRegistered()
+            WindowsContextMenuRegistry.createCleanUninstallScript()
         } catch (_: Exception) {}
     }.apply {
         isDaemon = true
@@ -145,38 +152,155 @@ fun main(args: Array<String>) {
             }
         }
 
-        // System Tray Icon & Clean Context Menu
+        var isTrayMenuVisible by remember { mutableStateOf(false) }
+        val trayWindowState = rememberWindowState(size = DpSize(230.dp, 195.dp))
+        var trayMenuTargetLocation by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+        var lastTrayClickTime by remember { mutableStateOf(0L) }
+
+        val showModernTrayMenu: (clickX: Int, clickY: Int) -> Unit = { clickX, clickY ->
+            val now = System.currentTimeMillis()
+            if (now - lastTrayClickTime > 200) {
+                lastTrayClickTime = now
+
+                val pointerLoc = if (clickX > 0 && clickY > 0) {
+                    java.awt.Point(clickX, clickY)
+                } else {
+                    java.awt.MouseInfo.getPointerInfo()?.location ?: java.awt.Point(100, 100)
+                }
+
+                val ge = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment()
+                val screenDevice = ge.screenDevices.firstOrNull { device ->
+                    device.defaultConfiguration.bounds.contains(pointerLoc)
+                } ?: ge.defaultScreenDevice
+
+                val config = screenDevice.defaultConfiguration
+                val screenBounds = config.bounds
+                val screenInsets = try {
+                    java.awt.Toolkit.getDefaultToolkit().getScreenInsets(config)
+                } catch (_: Exception) {
+                    java.awt.Insets(0, 0, 0, 0)
+                }
+
+                val menuWidth = 230
+                val menuHeight = 195
+
+                val usableX = screenBounds.x + screenInsets.left
+                val usableY = screenBounds.y + screenInsets.top
+                val usableWidth = screenBounds.width - screenInsets.left - screenInsets.right
+                val usableHeight = screenBounds.height - screenInsets.top - screenInsets.bottom
+                val usableRight = usableX + usableWidth
+                val usableBottom = usableY + usableHeight
+
+                // Center menu horizontally around click, clamped strictly within screen margins
+                val targetX = (pointerLoc.x - menuWidth / 2).coerceIn(
+                    usableX + 8,
+                    (usableRight - menuWidth - 8).coerceAtLeast(usableX + 8)
+                )
+
+                // If in bottom half of screen (typical taskbar position), float above the taskbar
+                val isBottomHalf = pointerLoc.y > (usableY + usableHeight / 2)
+                val targetY = if (isBottomHalf) {
+                    val idealY = minOf(pointerLoc.y - menuHeight - 10, usableBottom - menuHeight - 8)
+                    idealY.coerceAtLeast(usableY + 8)
+                } else {
+                    val idealY = maxOf(pointerLoc.y + 10, usableY + 8)
+                    idealY.coerceAtMost((usableBottom - menuHeight - 8).coerceAtLeast(usableY + 8))
+                }
+
+                trayWindowState.position = WindowPosition.Absolute(targetX.dp, targetY.dp)
+                trayMenuTargetLocation = Pair(targetX, targetY)
+                isTrayMenuVisible = true
+            }
+        }
+
+        // Attach mouse listener to TrayIcon to catch right-click
+        LaunchedEffect(Unit) {
+            if (java.awt.SystemTray.isSupported()) {
+                val tray = java.awt.SystemTray.getSystemTray()
+                for (attempt in 1..30) {
+                    val icons = tray.trayIcons
+                    if (icons.isNotEmpty()) {
+                        val trayIcon = icons.first()
+                        trayIcon.addMouseListener(object : java.awt.event.MouseAdapter() {
+                            override fun mouseReleased(e: java.awt.event.MouseEvent) {
+                                if (e.isPopupTrigger || e.button == java.awt.event.MouseEvent.BUTTON3) {
+                                    showModernTrayMenu(e.xOnScreen, e.yOnScreen)
+                                }
+                            }
+                            override fun mousePressed(e: java.awt.event.MouseEvent) {
+                                if (e.isPopupTrigger || e.button == java.awt.event.MouseEvent.BUTTON3) {
+                                    showModernTrayMenu(e.xOnScreen, e.yOnScreen)
+                                }
+                            }
+                        })
+                        break
+                    }
+                    kotlinx.coroutines.delay(100)
+                }
+            }
+        }
+
+        // System Tray Icon (Left-click opens app)
         Tray(
             icon = icon,
             tooltip = "Quick Pear",
             onAction = {
-                // Single click on tray icon opens the application
+                isTrayMenuVisible = false
                 isWindowVisible = true
                 node.setMode(DiscoveryMode.ACTIVE)
-            },
-            menu = {
-                Item("Quick Pear (Aktif di latar belakang)", enabled = false, onClick = {})
-                Separator()
-                Item("Buka Quick Pear", onClick = {
-                    isWindowVisible = true
-                    node.setMode(DiscoveryMode.ACTIVE)
-                })
-                CheckboxItem(
-                    text = "Mulai bersama sistem (Autostart)",
-                    checked = isAutostart,
-                    onCheckedChange = { checked ->
-                        DesktopAutostartManager.setAutostartEnabled(checked)
-                        isAutostart = DesktopAutostartManager.isAutostartEnabled()
-                    }
-                )
-                Separator()
-                Item("Keluar dari Quick Pear", onClick = {
-                    singleInstance.stop()
-                    scope.launch(Dispatchers.IO) { node.stop() }
-                    exitApplication()
-                })
             }
         )
+
+        // Modern Floating System Tray Context Menu (Matches sleek dark flyout design)
+        if (isTrayMenuVisible) {
+            Window(
+                onCloseRequest = { isTrayMenuVisible = false },
+                undecorated = true,
+                transparent = true,
+                alwaysOnTop = true,
+                resizable = false,
+                focusable = true,
+                state = trayWindowState
+            ) {
+                LaunchedEffect(trayWindowState.position) {
+                    trayMenuTargetLocation?.let { (x, y) ->
+                        window.setLocation(x, y)
+                    }
+                }
+
+                DisposableEffect(window) {
+                    val focusListener = object : java.awt.event.WindowFocusListener {
+                        override fun windowGainedFocus(e: java.awt.event.WindowEvent?) {}
+                        override fun windowLostFocus(e: java.awt.event.WindowEvent?) {
+                            isTrayMenuVisible = false
+                        }
+                    }
+                    window.addWindowFocusListener(focusListener)
+                    onDispose {
+                        window.removeWindowFocusListener(focusListener)
+                    }
+                }
+
+                ModernTrayMenu(
+                    isAutostart = isAutostart,
+                    onOpenApp = {
+                        isTrayMenuVisible = false
+                        isWindowVisible = true
+                        node.setMode(DiscoveryMode.ACTIVE)
+                    },
+                    onToggleAutostart = {
+                        DesktopAutostartManager.setAutostartEnabled(!isAutostart)
+                        isAutostart = DesktopAutostartManager.isAutostartEnabled()
+                    },
+                    onQuit = {
+                        isTrayMenuVisible = false
+                        singleInstance.stop()
+                        scope.launch(Dispatchers.IO) { node.stop() }
+                        exitApplication()
+                    }
+                )
+            }
+        }
 
         // Main Application Window
         if (isWindowVisible) {

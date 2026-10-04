@@ -114,9 +114,9 @@ class TransferViewModel(
                 node.transferProgress.collectLatest { progress ->
                     _uiState.update { it.copy(transferProgress = progress) }
                     if (progress?.status == com.app.quickpear.domain.TransferStatus.COMPLETED) {
-                        _uiState.update { it.copy(statusMessage = "Transfer selesai: ${progress.fileName}") }
+                        _uiState.update { it.copy(statusMessage = "Transfer completed: ${progress.fileName}") }
                     } else if (progress?.status == com.app.quickpear.domain.TransferStatus.FAILED) {
-                        _uiState.update { it.copy(statusMessage = "Transfer gagal: ${progress.errorMessage ?: "Terjadi kesalahan"}") }
+                        _uiState.update { it.copy(statusMessage = "Transfer failed: ${progress.errorMessage ?: "Unknown error"}") }
                     }
                 }
             }
@@ -126,7 +126,7 @@ class TransferViewModel(
                     _uiState.update {
                         it.copy(
                             incomingSharedText = Pair(sender.name, text),
-                            statusMessage = "Teks diterima dari ${sender.name}: \"${text.take(40)}${if (text.length > 40) "..." else ""}\""
+                            statusMessage = "Text received from ${sender.name}: \"${text.take(40)}${if (text.length > 40) "..." else ""}\""
                         )
                     }
                 }
@@ -163,15 +163,15 @@ class TransferViewModel(
                 _uiState.update {
                     it.copy(
                         statusMessage = if (success) {
-                            "${peer.name} berhasil dipasangkan dan ditambahkan ke daftar terpercaya!"
+                            "${peer.name} successfully paired and added to trusted devices!"
                         } else {
-                            "Pemasangan dengan ${peer.name} dibatalkan atau ditolak."
+                            "Pairing with ${peer.name} was canceled or declined."
                         }
                     )
                 }
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(statusMessage = "Gagal memasangkan: ${e.message}")
+                    it.copy(statusMessage = "Failed to pair: ${e.message}")
                 }
             } finally {
                 _uiState.update { it.copy(isPairingInProgress = false, pendingPairing = null) }
@@ -189,9 +189,27 @@ class TransferViewModel(
         }
     }
 
+    fun renameTrustedDevice(deviceId: String, newName: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            activeNode?.trustStore?.rename(deviceId, newName)
+            _uiState.update {
+                it.copy(statusMessage = "Device renamed successfully")
+            }
+        }
+    }
+
     fun removeTrustedDevice(deviceId: String) {
         viewModelScope.launch(Dispatchers.IO) {
             activeNode?.trustStore?.remove(deviceId)
+        }
+    }
+
+    fun clearAllTrustedDevices() {
+        viewModelScope.launch(Dispatchers.IO) {
+            activeNode?.trustStore?.clear()
+            _uiState.update {
+                it.copy(statusMessage = "All trusted devices cleared")
+            }
         }
     }
 
@@ -232,12 +250,12 @@ class TransferViewModel(
                 if (fileMap.isNotEmpty()) {
                     node.sendFiles(peer, fileMap)
                     _uiState.update {
-                        it.copy(statusMessage = "Berhasil mengirim ${fileMap.size} berkas ke ${peer.name}")
+                        it.copy(statusMessage = "Sent ${fileMap.size} file(s) to ${peer.name}")
                     }
                 }
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(statusMessage = "Gagal mengirim berkas ke ${peer.name}: ${e.message}")
+                    it.copy(statusMessage = "Failed to send file(s) to ${peer.name}: ${e.message}")
                 }
             }
         }
@@ -281,12 +299,12 @@ class TransferViewModel(
                 val ok = node.sendText(peer, text)
                 _uiState.update {
                     it.copy(
-                        statusMessage = if (ok) "Teks berhasil dikirim ke ${peer.name}" else "Gagal mengirim teks ke ${peer.name}"
+                        statusMessage = if (ok) "Text sent to ${peer.name}" else "Failed to send text to ${peer.name}"
                     )
                 }
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(statusMessage = "Gagal mengirim teks ke ${peer.name}: ${e.message}")
+                    it.copy(statusMessage = "Failed to send text to ${peer.name}: ${e.message}")
                 }
             }
         }
@@ -385,15 +403,15 @@ class TransferViewModel(
                     it.copy(
                         showRemotePairDialog = false,
                         statusMessage = if (success) {
-                            "Perangkat berhasil dipasangkan jarak jauh dan ditambahkan ke daftar terpercaya!"
+                            "Device successfully paired and added to trusted devices!"
                         } else {
-                            "Pemasangan jarak jauh dibatalkan atau ditolak."
+                            "Remote pairing was canceled or declined."
                         }
                     )
                 }
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(statusMessage = "Gagal memasangkan jarak jauh: ${e.message}")
+                    it.copy(statusMessage = "Remote pairing failed: ${e.message}")
                 }
             } finally {
                 _uiState.update {
@@ -407,7 +425,7 @@ class TransferViewModel(
         val node = activeNode ?: return
         val cleanCode = code.trim().replace(" ", "")
         if (cleanCode.length != 6) {
-            _uiState.update { it.copy(statusMessage = "Kode harus 6 angka.") }
+            _uiState.update { it.copy(statusMessage = "Pairing code must be 6 digits.") }
             return
         }
         remotePairingJob?.cancel()
@@ -431,15 +449,15 @@ class TransferViewModel(
                     it.copy(
                         showRemotePairDialog = false,
                         statusMessage = if (success) {
-                            "Berhasil terhubung dan dipasangkan ke perangkat tujuan!"
+                            "Successfully connected and paired with target device!"
                         } else {
-                            "Pemasangan jarak jauh dibatalkan atau ditolak."
+                            "Remote pairing was canceled or declined."
                         }
                     )
                 }
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(statusMessage = "Gagal bergabung: ${e.message}")
+                    it.copy(statusMessage = "Failed to join: ${e.message}")
                 }
             } finally {
                 _uiState.update {
@@ -471,7 +489,7 @@ class TransferViewModel(
                     val hotspot = node.p2pLinkNegotiator.startLocalHotspot()
                     if (hotspot != null) {
                         ip = hotspot.hostIp
-                        hotspotDesc = "Wi-Fi: ${hotspot.ssid} (Sandi: ${hotspot.passphrase})"
+                        hotspotDesc = "Wi-Fi: ${hotspot.ssid} (Password: ${hotspot.passphrase})"
                     }
                 }
 
@@ -482,12 +500,12 @@ class TransferViewModel(
                         webShareUrl = shareUrl,
                         webShareFiles = paths,
                         webShareHotspotInfo = hotspotDesc,
-                        statusMessage = "Bagi Web aktif di $shareUrl"
+                        statusMessage = "Web Share active at $shareUrl"
                     )
                 }
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(statusMessage = "Gagal memulai Bagi Web: ${e.message}")
+                    it.copy(statusMessage = "Failed to start Web Share: ${e.message}")
                 }
             }
         }
@@ -505,7 +523,7 @@ class TransferViewModel(
                     webShareUrl = null,
                     webShareFiles = emptyList(),
                     webShareHotspotInfo = null,
-                    statusMessage = "Bagi Web dihentikan"
+                    statusMessage = "Web Share stopped"
                 )
             }
         }

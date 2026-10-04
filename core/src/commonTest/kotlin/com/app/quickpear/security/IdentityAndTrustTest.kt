@@ -90,6 +90,17 @@ class IdentityAndTrustTest {
     }
 
     @Test
+    fun trustStoreRenameExplicitly() {
+        val store = TrustStore(tempDir("trust-rename"))
+        val peer = DeviceIdentity.generate()
+        store.add(peer.deviceId, "Old Name", peer.publicKey)
+        assertEquals("Old Name", store.get(peer.deviceId)?.name)
+
+        store.rename(peer.deviceId, "My Renamed Device")
+        assertEquals("My Renamed Device", store.get(peer.deviceId)?.name)
+    }
+
+    @Test
     fun trustStoreRejectsIdThatDoesNotMatchKey() {
         val store = TrustStore(tempDir("trust3"))
         val a = DeviceIdentity.generate()
@@ -97,5 +108,24 @@ class IdentityAndTrustTest {
 
         assertFailsWith<IllegalArgumentException> { store.add(a.deviceId, "Spoof", b.publicKey) }
         assertNull(store.get(a.deviceId))
+    }
+
+    @Test
+    fun trustStoreClearWipesAllDevices() {
+        val dir = tempDir("trust-clear")
+        val store = TrustStore(dir)
+        val peer1 = DeviceIdentity.generate()
+        val peer2 = DeviceIdentity.generate()
+
+        store.add(peer1.deviceId, "Device 1", peer1.publicKey)
+        store.add(peer2.deviceId, "Device 2", peer2.publicKey)
+        assertEquals(2, store.devices.value.size)
+
+        store.clear()
+        assertEquals(0, store.devices.value.size)
+
+        // Survives reload
+        val reloaded = TrustStore(dir)
+        assertEquals(0, reloaded.devices.value.size)
     }
 }
