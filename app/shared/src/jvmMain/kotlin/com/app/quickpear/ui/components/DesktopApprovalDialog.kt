@@ -81,7 +81,7 @@ fun DesktopTransferApprovalDialog(
 
     Window(
         onCloseRequest = { onDecision(ApprovalDecision.REJECT) },
-        title = "Quick Pear - Permintaan Berkas Masuk",
+        title = "Quick Pear - Incoming File Request",
         state = windowState,
         alwaysOnTop = true,
         resizable = false
@@ -104,7 +104,7 @@ fun DesktopTransferApprovalDialog(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "Permintaan Berkas Masuk",
+                                text = "Incoming File Request",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary
@@ -119,7 +119,7 @@ fun DesktopTransferApprovalDialog(
                         Spacer(modifier = Modifier.height(10.dp))
 
                         Text(
-                            text = "${approval.peer.name} ingin mengirim ${approval.request.files.size} berkas ($formattedSize).",
+                            text = "${approval.peer.name} wants to send ${approval.request.files.size} file(s) ($formattedSize).",
                             style = MaterialTheme.typography.bodyMedium
                         )
 
@@ -140,7 +140,7 @@ fun DesktopTransferApprovalDialog(
                             }
                             if (approval.request.files.size > 3) {
                                 Text(
-                                    text = "+${approval.request.files.size - 3} berkas lainnya",
+                                    text = "+${approval.request.files.size - 3} more file(s)",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.primary
                                 )
@@ -158,7 +158,7 @@ fun DesktopTransferApprovalDialog(
                                 modifier = Modifier.weight(1f),
                                 shape = RoundedCornerShape(8.dp)
                             ) {
-                                Text("Terima")
+                                Text("Accept")
                             }
 
                             OutlinedButton(
@@ -169,7 +169,7 @@ fun DesktopTransferApprovalDialog(
                                     contentColor = MaterialTheme.colorScheme.error
                                 )
                             ) {
-                                Text("Tolak")
+                                Text("Decline")
                             }
                         }
 
@@ -182,7 +182,7 @@ fun DesktopTransferApprovalDialog(
                                 contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                             )
                         ) {
-                            Text("Selalu Terima dari ${approval.peer.name}", fontSize = 12.sp)
+                            Text("Always Accept from ${approval.peer.name}", fontSize = 12.sp)
                         }
                     }
                 }
@@ -202,7 +202,7 @@ fun DesktopPairingApprovalDialog(
 
     Window(
         onCloseRequest = { onConfirm(false) },
-        title = "Quick Pear - Pasangkan Perangkat",
+        title = "Quick Pear - Pair Device",
         state = windowState,
         alwaysOnTop = true,
         resizable = false
@@ -221,7 +221,7 @@ fun DesktopPairingApprovalDialog(
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            text = "Konfirmasi Pemasangan",
+                            text = "Pairing Confirmation",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
@@ -230,12 +230,12 @@ fun DesktopPairingApprovalDialog(
                         Spacer(modifier = Modifier.height(8.dp))
 
                         Text(
-                            text = "${approval.peer.name} ingin dipasangkan.",
+                            text = "${approval.peer.name} wants to pair.",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            text = "Pastikan kode verifikasi berikut cocok di layar ${approval.peer.name}:",
+                            text = "Make sure the verification code matches on ${approval.peer.name}:",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                         )
@@ -267,7 +267,7 @@ fun DesktopPairingApprovalDialog(
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(8.dp)
                         ) {
-                            Text("Tolak")
+                            Text("Decline")
                         }
 
                         Button(
@@ -275,7 +275,7 @@ fun DesktopPairingApprovalDialog(
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(8.dp)
                         ) {
-                            Text("Cocok & Percayai")
+                            Text("Match & Trust")
                         }
                     }
                 }

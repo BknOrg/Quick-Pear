@@ -26,12 +26,12 @@ fun ApprovalDialog(
     AlertDialog(
         onDismissRequest = onReject,
         title = {
-            Text(text = "Permintaan Transfer File")
+            Text(text = "File Transfer Request")
         },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "Perangkat lain ingin mengirim $totalFiles berkas (${FormatUtils.formatBytes(totalSizeBytes)}).",
+                    text = "A nearby device wants to send $totalFiles file(s) (${FormatUtils.formatBytes(totalSizeBytes)}).",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(modifier = Modifier.height(8.dp))
@@ -43,7 +43,7 @@ fun ApprovalDialog(
                 }
                 if (totalFiles > 3) {
                     Text(
-                        text = "... dan ${totalFiles - 3} berkas lainnya",
+                        text = "... and ${totalFiles - 3} more file(s)",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -51,12 +51,12 @@ fun ApprovalDialog(
         },
         confirmButton = {
             Button(onClick = onAccept) {
-                Text("Terima")
+                Text("Accept")
             }
         },
         dismissButton = {
             OutlinedButton(onClick = onReject) {
-                Text("Tolak")
+                Text("Decline")
             }
         }
     )

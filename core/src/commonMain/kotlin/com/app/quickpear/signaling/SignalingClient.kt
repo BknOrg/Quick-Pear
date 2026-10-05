@@ -314,7 +314,7 @@ class SignalingClient(
                                 senderId = identity.deviceId,
                                 senderName = deviceNameProvider(),
                                 sessionId = msg.sessionId,
-                                errorMessage = "Transfer ditolak oleh penerima"
+                                errorMessage = "Transfer declined by receiver"
                             )
                             mqttClient.publish("quickpear/msg/$senderHashed", json.encodeToString(CloudMessagePayload.serializer(), cancelMsg).encodeToByteArray())
                             return@launch
@@ -326,7 +326,7 @@ class SignalingClient(
                                 senderId = identity.deviceId,
                                 senderName = deviceNameProvider(),
                                 sessionId = msg.sessionId,
-                                errorMessage = "Penyimpanan tidak mencukupi"
+                                errorMessage = "Receiver storage is insufficient"
                             )
                             mqttClient.publish("quickpear/msg/$senderHashed", json.encodeToString(CloudMessagePayload.serializer(), cancelMsg).encodeToByteArray())
                             return@launch
@@ -577,9 +577,9 @@ class SignalingClient(
 
         if (acceptMsg == null || acceptMsg.action == "FILE_CANCEL") {
             val reason = if (acceptMsg?.action == "FILE_CANCEL") {
-                acceptMsg.errorMessage.ifEmpty { "Transfer ditolak atau dibatalkan oleh penerima" }
+                acceptMsg.errorMessage.ifEmpty { "Transfer declined or cancelled by receiver" }
             } else {
-                "Perangkat tujuan tidak merespons transfer cloud"
+                "Target device did not respond to cloud transfer"
             }
             onProgressUpdate?.invoke(
                 TransferProgress(

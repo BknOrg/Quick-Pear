@@ -33,10 +33,10 @@ class NotificationApprovalHandler(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val approvalChannel = NotificationChannel(
                 CHANNEL_APPROVAL_ID,
-                "Konfirmasi Transfer & Pairing",
+                "Transfer & Pairing Confirmation",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Notifikasi interaktif untuk menerima atau menolak berkas dan pairing perangkat"
+                description = "Interactive notifications to accept or decline files and device pairing"
                 enableVibration(true)
             }
             notificationManager.createNotificationChannel(approvalChannel)
@@ -68,9 +68,9 @@ class NotificationApprovalHandler(
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 
         val notification = NotificationCompat.Builder(context, CHANNEL_APPROVAL_ID)
-            .setContentTitle("Berkas Masuk dari ${peer.name}")
-            .setContentText("$fileCount berkas ($sizeFormatted)")
-            .setStyle(NotificationCompat.BigTextStyle().bigText("${peer.name} ingin mengirim $fileCount berkas ($sizeFormatted). Pilih tindakan di bawah:"))
+            .setContentTitle("Incoming Files from ${peer.name}")
+            .setContentText("$fileCount files ($sizeFormatted)")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("${peer.name} wants to send $fileCount files ($sizeFormatted). Choose an action below:"))
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setLargeIcon(BitmapFactory.decodeResource(context.resources, R.mipmap.ic_launcher))
             .setPriority(NotificationCompat.PRIORITY_MAX)
@@ -78,9 +78,9 @@ class NotificationApprovalHandler(
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setAutoCancel(true)
             .setOngoing(false)
-            .addAction(0, "Terima", PendingIntent.getBroadcast(context, notifId * 10 + 1, acceptIntent, flags))
-            .addAction(0, "Selalu Terima", PendingIntent.getBroadcast(context, notifId * 10 + 2, acceptAlwaysIntent, flags))
-            .addAction(0, "Tolak", PendingIntent.getBroadcast(context, notifId * 10 + 3, rejectIntent, flags))
+            .addAction(0, "Accept", PendingIntent.getBroadcast(context, notifId * 10 + 1, acceptIntent, flags))
+            .addAction(0, "Always Accept", PendingIntent.getBroadcast(context, notifId * 10 + 2, acceptAlwaysIntent, flags))
+            .addAction(0, "Decline", PendingIntent.getBroadcast(context, notifId * 10 + 3, rejectIntent, flags))
             .build()
 
         notificationManager.notify(notifId, notification)
@@ -111,17 +111,17 @@ class NotificationApprovalHandler(
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 
         val notification = NotificationCompat.Builder(context, CHANNEL_APPROVAL_ID)
-            .setContentTitle("Permintaan Pasangkan Perangkat")
-            .setContentText("Kode: $sasCode dari ${peer.name}")
-            .setStyle(NotificationCompat.BigTextStyle().bigText("Perangkat '${peer.name}' ingin dipasangkan.\nKode verifikasi: $sasCode\nApakah kode cocok di kedua layar?"))
+            .setContentTitle("Pairing Request")
+            .setContentText("Code: $sasCode from ${peer.name}")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("Device '${peer.name}' wants to pair.\nVerification code: $sasCode\nDoes the code match on both screens?"))
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setLargeIcon(BitmapFactory.decodeResource(context.resources, R.mipmap.ic_launcher))
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setAutoCancel(true)
-            .addAction(0, "Cocok", PendingIntent.getBroadcast(context, notifId * 10 + 1, matchIntent, flags))
-            .addAction(0, "Tolak", PendingIntent.getBroadcast(context, notifId * 10 + 2, rejectIntent, flags))
+            .addAction(0, "Match", PendingIntent.getBroadcast(context, notifId * 10 + 1, matchIntent, flags))
+            .addAction(0, "Decline", PendingIntent.getBroadcast(context, notifId * 10 + 2, rejectIntent, flags))
             .build()
 
         notificationManager.notify(notifId, notification)

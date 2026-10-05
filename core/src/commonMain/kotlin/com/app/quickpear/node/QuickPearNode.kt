@@ -82,7 +82,7 @@ class QuickPearNode(
             val dummyMeta = listOf(
                 FileMetadata(
                     fileId = 1,
-                    fileName = "$fileCount berkas",
+                    fileName = "$fileCount files",
                     fileSizeBytes = totalBytes,
                     chunkSizeBytes = 65536,
                     totalChunks = 1,
@@ -343,7 +343,7 @@ class QuickPearNode(
     @kotlin.concurrent.Volatile
     private var activeSendingJob: kotlinx.coroutines.Job? = null
 
-    fun cancelTransfer(reason: String = "Transfer dibatalkan oleh pengguna") {
+    fun cancelTransfer(reason: String = "Transfer cancelled by user") {
         activeSendingJob?.cancel()
         transferEngine.cancelTransfer(reason)
     }

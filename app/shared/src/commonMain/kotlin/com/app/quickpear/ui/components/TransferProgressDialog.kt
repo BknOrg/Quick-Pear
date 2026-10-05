@@ -26,10 +26,10 @@ fun TransferProgressDialog(
         title = {
             Text(
                 text = when (progress.status) {
-                    TransferStatus.TRANSFERRING -> "Mengirim berkas..."
-                    TransferStatus.COMPLETED -> "Transfer Selesai"
-                    TransferStatus.FAILED -> "Transfer Gagal"
-                    else -> "Proses Transfer"
+                    TransferStatus.TRANSFERRING -> "Transferring files..."
+                    TransferStatus.COMPLETED -> "Transfer Completed"
+                    TransferStatus.FAILED -> "Transfer Failed"
+                    else -> "Transfer in Progress"
                 }
             )
         },
@@ -57,7 +57,7 @@ fun TransferProgressDialog(
                     val bytesLeft = progress.totalBytes - progress.bytesTransferred
                     val timeRemaining = FormatUtils.formatTimeRemaining(bytesLeft, progress.transferSpeedBytesPerSec)
                     Text(
-                        text = "Kecepatan: ${FormatUtils.formatSpeed(progress.transferSpeedBytesPerSec)} • Sisa waktu: $timeRemaining",
+                        text = "Speed: ${FormatUtils.formatSpeed(progress.transferSpeedBytesPerSec)} • Remaining: $timeRemaining",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -75,7 +75,7 @@ fun TransferProgressDialog(
         confirmButton = {},
         dismissButton = {
             OutlinedButton(onClick = onCancel) {
-                Text(if (progress.status == TransferStatus.COMPLETED) "Tutup" else "Batal")
+                Text(if (progress.status == TransferStatus.COMPLETED) "Close" else "Cancel")
             }
         }
     )

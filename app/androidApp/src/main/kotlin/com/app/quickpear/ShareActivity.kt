@@ -58,7 +58,7 @@ class ShareActivity : ComponentActivity() {
 
         val uris = extractUris(intent)
         if (uris.isEmpty()) {
-            Toast.makeText(this, "Tidak ada berkas yang dipilih", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "No files selected", Toast.LENGTH_SHORT).show()
             finish()
             return
         }
@@ -89,12 +89,12 @@ class ShareActivity : ComponentActivity() {
     private fun sendDirectly(target: PeerDevice, uris: List<Uri>) {
         val node = TransferForegroundService.activeNode
         if (node == null) {
-            Toast.makeText(this, "Layanan Quick Pear belum siap", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Quick Pear service is not ready", Toast.LENGTH_SHORT).show()
             finish()
             return
         }
 
-        Toast.makeText(this, "Mengirim ${uris.size} berkas ke ${target.name} di latar belakang...", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Sending ${uris.size} file(s) to ${target.name} in background...", Toast.LENGTH_SHORT).show()
 
         val appContext = applicationContext
         // Dispatch to background scope so finishing activity doesn't cancel the transfer
@@ -104,7 +104,7 @@ class ShareActivity : ComponentActivity() {
                 node.sendFiles(target, files)
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(appContext, "Gagal mengirim: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(appContext, "Failed to send: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -159,12 +159,12 @@ fun ShareBottomSheet(
                 .padding(24.dp)
         ) {
             Text(
-                text = "Kirim dengan Quick Pear",
+                text = "Send with Quick Pear",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "${uris.size} berkas dipilih. Ketuk perangkat tujuan:",
+                text = "${uris.size} file(s) selected. Tap target device:",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
             )
@@ -179,11 +179,11 @@ fun ShareBottomSheet(
                 ) {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp))
                     Spacer(modifier = Modifier.width(16.dp))
-                    Text("Menyiapkan dan mengirim berkas...")
+                    Text("Preparing and sending files...")
                 }
             } else if (onlineDevices.isEmpty()) {
                 Text(
-                    text = "Mencari perangkat di sekitar...\nPastikan perangkat tujuan membuka Quick Pear atau menjalankan layanan di background.",
+                    text = "Searching for nearby devices...\nMake sure the target device has Quick Pear open or running in the background.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                     modifier = Modifier.padding(vertical = 16.dp)

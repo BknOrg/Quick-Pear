@@ -57,7 +57,7 @@ fun DesktopSendToDialog(
 
     Window(
         onCloseRequest = onDismiss,
-        title = "Kirim Berkas via Quick Pear",
+        title = "Send Files via Quick Pear",
         icon = icon,
         state = rememberWindowState(width = 460.dp, height = 520.dp),
         resizable = false
@@ -69,7 +69,7 @@ fun DesktopSendToDialog(
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Text(
-                        text = "Kirim Berkas via Quick Pear",
+                        text = "Send Files via Quick Pear",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -77,7 +77,7 @@ fun DesktopSendToDialog(
                     Spacer(modifier = Modifier.height(4.dp))
 
                     Text(
-                        text = "${files.size} berkas terpilih (${FormatUtils.formatBytes(totalBytes)}). Pilih perangkat tujuan:",
+                        text = "${files.size} file(s) selected (${FormatUtils.formatBytes(totalBytes)}). Select target device:",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
@@ -92,7 +92,7 @@ fun DesktopSendToDialog(
                         ) {
                             CircularProgressIndicator(modifier = Modifier.size(28.dp))
                             Spacer(modifier = Modifier.width(16.dp))
-                            Text("Mengirim...")
+                            Text("Sending...")
                         }
                     } else if (onlineDevices.isEmpty()) {
                         Box(
@@ -100,7 +100,7 @@ fun DesktopSendToDialog(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "Mencari perangkat di sekitar...\nPastikan perangkat tujuan membuka Quick Pear atau menjalankan layanan di background.",
+                                text = "Searching for nearby devices...\nMake sure the target device has Quick Pear open or running in the background.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                                 modifier = Modifier.padding(vertical = 16.dp)
@@ -153,7 +153,7 @@ fun DesktopSendToDialog(
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.outlinedButtonColors()
                     ) {
-                        Text("Batal")
+                        Text("Cancel")
                     }
                 }
             }

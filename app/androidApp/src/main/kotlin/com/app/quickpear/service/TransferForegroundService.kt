@@ -46,7 +46,7 @@ class TransferForegroundService : Service() {
         var activeNode: QuickPearNode? = null
             private set
 
-        fun startService(context: Context, statusMessage: String = "Quick Pear siap menerima berkas") {
+        fun startService(context: Context, statusMessage: String = "Quick Pear is ready to receive files") {
             val intent = Intent(context, TransferForegroundService::class.java).apply {
                 putExtra("status", statusMessage)
             }
@@ -122,7 +122,7 @@ class TransferForegroundService : Service() {
                 } else if (progress != null && progress.status == TransferStatus.COMPLETED) {
                     updateCompletedNotification(progress.fileName)
                 } else {
-                    updateNotification("Quick Pear siap menerima berkas")
+                    updateNotification("Quick Pear is ready to receive files")
                 }
             }
         }
@@ -145,10 +145,10 @@ class TransferForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CANCEL_TRANSFER) {
             activeNode?.cancelTransfer()
-            updateNotification("Transfer dibatalkan")
+            updateNotification("Transfer cancelled")
             return START_STICKY
         }
-        val statusMessage = intent?.getStringExtra("status") ?: "Quick Pear siap menerima berkas"
+        val statusMessage = intent?.getStringExtra("status") ?: "Quick Pear is ready to receive files"
         val notification = createNotification(statusMessage)
         startForeground(NOTIF_ID, notification)
         return START_STICKY
@@ -183,10 +183,10 @@ class TransferForegroundService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Layanan Latar Belakang",
+                "Background Service",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Status kesiapan menerima berkas di latar belakang"
+                description = "Background file transfer readiness"
                 setShowBadge(false)
             }
             val manager = getSystemService(NotificationManager::class.java)
@@ -241,7 +241,7 @@ class TransferForegroundService : Service() {
         )
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Mentransfer berkas...")
+            .setContentTitle("Transferring files...")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setLargeIcon(BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher))
@@ -267,7 +267,7 @@ class TransferForegroundService : Service() {
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Quick Pear")
-            .setContentText("Transfer selesai: $fileName")
+            .setContentText("Transfer completed: $fileName")
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setLargeIcon(BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher))
             .setContentIntent(pendingOpen)

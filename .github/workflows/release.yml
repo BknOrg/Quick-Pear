@@ -1,0 +1,101 @@
+name: Release Quick Pear
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    name: Build Android Release APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Android Release APK
+        run: ./gradlew :app:androidApp:assembleRelease --stacktrace
+
+      - name: Upload Android APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuickPear-Android-APK
+          path: app/androidApp/build/outputs/apk/release/*.apk
+
+  build-windows:
+    name: Build Windows Release Packages (MSI & EXE)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Install WiX Toolset
+        run: |
+          dotnet tool install --global wix --version 3.14.1 || true
+          choco install wixtoolset -y
+
+      - name: Build Windows MSI and EXE Installers
+        run: |
+          ./gradlew.bat :app:desktopApp:packageMsi :app:desktopApp:packageExe --stacktrace
+
+      - name: Upload Windows Packages Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuickPear-Windows-Installers
+          path: |
+            app/desktopApp/build/compose/binaries/main/msi/*.msi
+            app/desktopApp/build/compose/binaries/main/exe/*.exe
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-android, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Download Android Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: QuickPear-Android-APK
+          path: release-assets/android
+
+      - name: Download Windows Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: QuickPear-Windows-Installers
+          path: release-assets/windows
+
+      - name: List Artifacts to Publish
+        run: |
+          ls -laR release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/android/*.apk
+            release-assets/windows/*.msi
+            release-assets/windows/*.exe
+          generate_release_notes: true
+          draft: false
+          prerelease: false

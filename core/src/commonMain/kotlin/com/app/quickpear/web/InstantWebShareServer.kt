@@ -155,7 +155,7 @@ class InstantWebShareServer(
 
     private suspend fun serveIndexHtml(writeChannel: ByteWriteChannel) {
         val fileItemsHtml = if (sharedFiles.isEmpty()) {
-            "<p style='color: #64748b; font-style: italic;'>Tidak ada berkas yang dibagikan saat ini.</p>"
+            "<p style='color: #64748b; font-style: italic;'>No files are currently shared.</p>"
         } else {
             sharedFiles.mapIndexed { idx, path ->
                 val meta = fileSystem.metadataOrNull(path)
@@ -167,7 +167,7 @@ class InstantWebShareServer(
                         <span class="file-name">${escapeHtml(path.name)}</span>
                         <span class="file-size">$sizeStr</span>
                     </div>
-                    <a class="btn-download" href="/download/$idx" download="${escapeHtml(path.name)}">Unduh Berkas</a>
+                    <a class="btn-download" href="/download/$idx" download="${escapeHtml(path.name)}">Download</a>
                 </div>
                 """.trimIndent()
             }.joinToString("\n")
@@ -175,7 +175,7 @@ class InstantWebShareServer(
 
         val html = """
         <!DOCTYPE html>
-        <html lang="id">
+        <html lang="en">
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -222,10 +222,10 @@ class InstantWebShareServer(
                 <div class="header">
                     <div class="logo">🍐</div>
                     <h1>Quick Pear Web Share</h1>
-                    <p>Unduh berkas langsung ke perangkat Apple, Android, atau PC tanpa aplikasi.</p>
+                    <p>Download files directly to Apple, Android, or PC without installing any app.</p>
                 </div>
                 <div class="card">
-                    <div class="card-title">Berkas Tersedia (${sharedFiles.size})</div>
+                    <div class="card-title">Available Files (${sharedFiles.size})</div>
                     $fileItemsHtml
                 </div>
                 <div class="footer">

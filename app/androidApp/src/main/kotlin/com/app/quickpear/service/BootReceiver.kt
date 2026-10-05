@@ -8,7 +8,7 @@ class BootReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED || intent.action == "android.intent.action.QUICKBOOT_POWERON") {
-            TransferForegroundService.startService(context, "Quick Pear siap menerima berkas")
+            TransferForegroundService.startService(context, "Quick Pear is ready to receive files")
         }
     }
 }

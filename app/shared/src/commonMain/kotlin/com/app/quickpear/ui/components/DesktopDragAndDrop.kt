@@ -49,7 +49,7 @@ fun DesktopDragDropContainer(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "Lepaskan Berkas di Sini untuk Mengirim",
+                    text = "Drop Files Here to Send",
                     color = Color.White,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold

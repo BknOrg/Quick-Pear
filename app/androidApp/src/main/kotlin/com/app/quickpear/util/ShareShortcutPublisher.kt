@@ -29,7 +29,7 @@ object ShareShortcutPublisher {
 
             ShortcutInfoCompat.Builder(context, device.id)
                 .setShortLabel(device.name)
-                .setLongLabel("Kirim berkas ke ${device.name}")
+                .setLongLabel("Send files to ${device.name}")
                 .setIcon(IconCompat.createWithResource(context, android.R.drawable.stat_sys_upload))
                 .setIntent(intent)
                 .setCategories(setOf(CATEGORY_SHARE_TARGET))

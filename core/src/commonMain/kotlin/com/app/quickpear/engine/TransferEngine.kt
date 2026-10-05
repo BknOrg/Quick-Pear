@@ -53,7 +53,7 @@ class TransferEngine(
     /**
      * Cancels the active file transfer, cleans up partial files on receiver, and terminates connection.
      */
-    fun cancelTransfer(reason: String = "Transfer dibatalkan oleh pengguna") {
+    fun cancelTransfer(reason: String = "Transfer cancelled by user") {
         isCancelled = true
         val receivingFile = currentReceivingFileName
         if (receivingFile != null) {
@@ -111,7 +111,7 @@ class TransferEngine(
             when (respCode) {
                 ProtocolConstants.METADATA_RESP_ACCEPTED -> Unit
                 ProtocolConstants.METADATA_RESP_INSUFFICIENT_STORAGE -> {
-                    failed("Penyimpanan perangkat penerima tidak mencukupi")
+                    failed("Receiver device storage is insufficient")
                     return@withContext
                 }
                 else -> {
@@ -169,20 +169,20 @@ class TransferEngine(
                 }
                 val (_, finalStatus) = connection.readTransferCompleteAck()
                 if (finalStatus != 0x00.toByte()) {
-                    failed("File ${metadata.fileName} rusak saat diterima (checksum tidak cocok)")
+                    failed("File ${metadata.fileName} corrupted during transfer (checksum mismatch)")
                     return@withContext
                 }
             }
 
             _progressState.value = _progressState.value?.copy(status = TransferStatus.COMPLETED)
         } catch (e: CancellationException) {
-            failed("Transfer dibatalkan oleh pengguna")
+            failed("Transfer cancelled by user")
             throw e
         } catch (e: Exception) {
             if (isCancelled) {
-                failed("Transfer dibatalkan oleh pengguna")
+                failed("Transfer cancelled by user")
             } else {
-                failed("Transfer gagal: ${e.message}")
+                failed("Transfer failed: ${e.message}")
             }
         } finally {
             activeConnection = null
@@ -209,7 +209,7 @@ class TransferEngine(
 
             if (!partFileManager.hasSufficientStorage(totalRequiredBytes)) {
                 connection.sendMetadataResponse(ProtocolConstants.METADATA_RESP_INSUFFICIENT_STORAGE, 0L)
-                failed("Kapasitas penyimpanan tidak mencukupi", totalRequiredBytes)
+                failed("Storage space is insufficient", totalRequiredBytes)
                 return@withContext
             }
 
@@ -295,7 +295,7 @@ class TransferEngine(
                                 // Corrupted: discard so the next attempt restarts from chunk 0.
                                 partFileManager.resetPart(metadata.fileName)
                                 connection.sendTransferCompleteAck(fileId, 0x01.toByte())
-                                failed("File ${metadata.fileName} rusak (checksum tidak cocok)")
+                                failed("File ${metadata.fileName} corrupted (checksum mismatch)")
                                 return@withContext
                             }
                         }
@@ -311,7 +311,7 @@ class TransferEngine(
                 try { partFileManager.resetPart(partial) } catch (_: Exception) {}
                 currentReceivingFileName = null
             }
-            failed("Transfer dibatalkan oleh pengguna")
+            failed("Transfer cancelled by user")
             throw e
         } catch (e: Exception) {
             val partial = currentReceivingFileName
@@ -320,9 +320,9 @@ class TransferEngine(
                 currentReceivingFileName = null
             }
             if (isCancelled) {
-                failed("Transfer dibatalkan oleh pengguna")
+                failed("Transfer cancelled by user")
             } else {
-                failed("Penerimaan gagal: ${e.message}")
+                failed("Receiving failed: ${e.message}")
             }
         } finally {
             activeConnection = null
