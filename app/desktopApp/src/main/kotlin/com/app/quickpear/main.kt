@@ -21,8 +21,10 @@ import androidx.compose.ui.window.rememberWindowState
 import com.app.quickpear.discovery.DiscoveryMode
 import com.app.quickpear.domain.DeviceType
 import com.app.quickpear.domain.FileMetadata
+import com.app.quickpear.domain.TransferStatus
 import com.app.quickpear.io.ChecksumUtil
 import com.app.quickpear.node.QuickPearNode
+import com.app.quickpear.notification.DesktopNotificationManager
 import com.app.quickpear.session.DesktopApprovalHandler
 import com.app.quickpear.ui.components.DesktopApprovalHost
 import com.app.quickpear.ui.components.DesktopSendToDialog
@@ -42,6 +44,25 @@ import java.io.File
 import kotlin.system.exitProcess
 
 fun createIconPainter(): Painter {
+    return try {
+        val stream = Thread.currentThread().contextClassLoader.getResourceAsStream("icon.png")
+            ?: Thread.currentThread().contextClassLoader.getResourceAsStream("drawable/app_logo.png")
+            ?: Thread.currentThread().contextClassLoader.getResourceAsStream("app_logo.png")
+            ?: File("icon.png").takeIf { it.exists() }?.inputStream()
+            ?: File("app.png").takeIf { it.exists() }?.inputStream()
+            ?: File("../app.png").takeIf { it.exists() }?.inputStream()
+        if (stream != null) {
+            val bufferedImage = stream.use { javax.imageio.ImageIO.read(it) }
+            BitmapPainter(bufferedImage.toComposeImageBitmap())
+        } else {
+            createFallbackIconPainter()
+        }
+    } catch (_: Exception) {
+        createFallbackIconPainter()
+    }
+}
+
+private fun createFallbackIconPainter(): Painter {
     val size = 64
     val image = BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB)
     val g = image.createGraphics()
@@ -107,6 +128,11 @@ fun main(args: Array<String>) {
         val pendingTransfer by approvalHandler.pendingTransfer.collectAsState()
         val pendingPairing by approvalHandler.pendingPairing.collectAsState()
 
+        val downloadDirFile = remember {
+            val userHome = System.getProperty("user.home", ".")
+            File(userHome, "Downloads/Quick Pear").apply { mkdirs() }
+        }
+
         val node = remember {
             val userHome = System.getProperty("user.home", ".")
             val os = System.getProperty("os.name", "").lowercase()
@@ -115,7 +141,7 @@ fun main(args: Array<String>) {
                 else -> "$userHome/.local/share/quickpear"
             }.toPath()
 
-            val downloadDir = File(userHome, "Downloads/Quick Pear").apply { mkdirs() }.canonicalPath.toPath()
+            val downloadDir = downloadDirFile.canonicalPath.toPath()
             val hostName = System.getenv("COMPUTERNAME") ?: try {
                 java.net.InetAddress.getLocalHost().hostName
             } catch (_: Exception) {
@@ -129,6 +155,26 @@ fun main(args: Array<String>) {
                 deviceType = if (os.contains("win")) DeviceType.WINDOWS else DeviceType.LINUX,
                 approvalHandler = approvalHandler
             )
+        }
+
+        val transferProgress by node.transferProgress.collectAsState()
+        val isTransferring = transferProgress?.status == TransferStatus.TRANSFERRING
+
+        val notificationManager = remember {
+            DesktopNotificationManager(
+                node = node,
+                downloadDirectory = downloadDirFile,
+                onOpenWindow = {
+                    EventQueue.invokeLater {
+                        isWindowVisible = true
+                        node.setMode(DiscoveryMode.ACTIVE)
+                    }
+                }
+            )
+        }
+
+        LaunchedEffect(Unit) {
+            notificationManager.start(scope)
         }
 
         onOpenRequested = {
@@ -153,7 +199,8 @@ fun main(args: Array<String>) {
         }
 
         var isTrayMenuVisible by remember { mutableStateOf(false) }
-        val trayWindowState = rememberWindowState(size = DpSize(230.dp, 195.dp))
+        val menuHeightDp = if (isTransferring) 275.dp else 235.dp
+        val trayWindowState = rememberWindowState(size = DpSize(230.dp, menuHeightDp))
         var trayMenuTargetLocation by remember { mutableStateOf<Pair<Int, Int>?>(null) }
         var lastTrayClickTime by remember { mutableStateOf(0L) }
 
@@ -182,7 +229,8 @@ fun main(args: Array<String>) {
                 }
 
                 val menuWidth = 230
-                val menuHeight = 195
+                val menuHeight = if (isTransferring) 275 else 235
+                trayWindowState.size = DpSize(menuWidth.dp, menuHeight.dp)
 
                 val usableX = screenBounds.x + screenInsets.left
                 val usableY = screenBounds.y + screenInsets.top
@@ -221,6 +269,7 @@ fun main(args: Array<String>) {
                     val icons = tray.trayIcons
                     if (icons.isNotEmpty()) {
                         val trayIcon = icons.first()
+                        notificationManager.attachTrayIcon(trayIcon)
                         trayIcon.addMouseListener(object : java.awt.event.MouseAdapter() {
                             override fun mouseReleased(e: java.awt.event.MouseEvent) {
                                 if (e.isPopupTrigger || e.button == java.awt.event.MouseEvent.BUTTON3) {
@@ -283,10 +332,19 @@ fun main(args: Array<String>) {
 
                 ModernTrayMenu(
                     isAutostart = isAutostart,
+                    isTransferring = isTransferring,
                     onOpenApp = {
                         isTrayMenuVisible = false
                         isWindowVisible = true
                         node.setMode(DiscoveryMode.ACTIVE)
+                    },
+                    onOpenDownloads = {
+                        isTrayMenuVisible = false
+                        notificationManager.openDownloadFolder()
+                    },
+                    onCancelTransfer = {
+                        isTrayMenuVisible = false
+                        node.cancelTransfer()
                     },
                     onToggleAutostart = {
                         DesktopAutostartManager.setAutostartEnabled(!isAutostart)

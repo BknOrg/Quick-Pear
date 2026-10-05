@@ -161,4 +161,59 @@ class TransferEngineTest {
         assertTrue(fs.exists(dstDir / "escaped.txt"))
         assertFalse(fs.exists(dstDir.parent!!.parent!! / "escaped.txt"))
     }
+
+    @Test
+    fun cancelTransferStopsTransferAndCleansUpPartialFiles() = runTest {
+        val srcDir = tempDir("src-cancel")
+        val dstDir = tempDir("dst-cancel")
+        val (meta, path) = createFile(srcDir, "cancel-test.bin", 6 * 1024 * 1024)
+
+        val port = 9906
+        val server = KtorSocketServer(port = port, host = "127.0.0.1")
+        val sender = TransferEngine(PartFileManager(tempDir("sender-unused-cancel")))
+        val receiver = TransferEngine(PartFileManager(dstDir))
+        server.start()
+
+        try {
+            kotlinx.coroutines.coroutineScope {
+                val rx = async {
+                    val conn = server.acceptConnections().first()
+                    try {
+                        receiver.receiveFiles(conn) { true }
+                    } catch (_: Exception) {
+                    } finally {
+                        conn.close()
+                    }
+                }
+                val tx = async {
+                    val conn = KtorSocketClient().connect("127.0.0.1", port)
+                    try {
+                        sender.sendFiles(conn, "test-cancel-session", mapOf(meta to path))
+                    } catch (_: Exception) {
+                    } finally {
+                        conn.close()
+                    }
+                }
+
+                // Wait until transfer starts
+                while (sender.progressState.value?.status != TransferStatus.TRANSFERRING &&
+                    receiver.progressState.value?.status != TransferStatus.TRANSFERRING) {
+                    kotlinx.coroutines.delay(10)
+                }
+
+                // Cancel from sender side
+                sender.cancelTransfer("Transfer cancelled by user")
+
+                listOf(rx, tx).awaitAll()
+            }
+        } finally {
+            server.stop()
+        }
+
+        assertEquals(TransferStatus.FAILED, sender.progressState.value?.status)
+        assertEquals(TransferStatus.FAILED, receiver.progressState.value?.status)
+        assertFalse(fs.exists(dstDir / "cancel-test.bin"))
+        assertFalse(fs.exists(dstDir / "cancel-test.bin.part"))
+        assertFalse(fs.exists(dstDir / "cancel-test.bin.part.meta"))
+    }
 }

@@ -26,5 +26,4 @@ rmdir /s /q "%APPDATA%\QuickPear" >nul 2>&1
 
 echo.
 echo [SUCCESS] All Quick Pear registry keys, shortcuts, and data have been completely removed.
-echo.
 pause

@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Environment
@@ -14,6 +15,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.app.quickpear.MainActivity
+import com.app.quickpear.R
 import com.app.quickpear.ble.AndroidBleProximity
 import com.app.quickpear.discovery.BleProximityEngine
 import com.app.quickpear.discovery.DiscoveryMode
@@ -39,6 +41,7 @@ class TransferForegroundService : Service() {
     companion object {
         const val CHANNEL_ID = "quickpear_transfer_channel"
         const val NOTIF_ID = 1001
+        const val ACTION_CANCEL_TRANSFER = "com.app.quickpear.action.CANCEL_TRANSFER"
 
         var activeNode: QuickPearNode? = null
             private set
@@ -140,6 +143,11 @@ class TransferForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_CANCEL_TRANSFER) {
+            activeNode?.cancelTransfer()
+            updateNotification("Transfer dibatalkan")
+            return START_STICKY
+        }
         val statusMessage = intent?.getStringExtra("status") ?: "Quick Pear siap menerima berkas"
         val notification = createNotification(statusMessage)
         startForeground(NOTIF_ID, notification)
@@ -199,6 +207,7 @@ class TransferForegroundService : Service() {
             .setContentTitle("Quick Pear")
             .setContentText(message)
             .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setLargeIcon(BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher))
             .setContentIntent(pendingOpen)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -223,11 +232,21 @@ class TransferForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val cancelIntent = Intent(this, TransferForegroundService::class.java).apply {
+            action = ACTION_CANCEL_TRANSFER
+        }
+        val pendingCancel = PendingIntent.getService(
+            this, 1, cancelIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Mentransfer berkas...")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setLargeIcon(BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher))
             .setContentIntent(pendingOpen)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancel", pendingCancel)
             .setOngoing(true)
             .setProgress(100, percent, false)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -250,6 +269,7 @@ class TransferForegroundService : Service() {
             .setContentTitle("Quick Pear")
             .setContentText("Transfer selesai: $fileName")
             .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setLargeIcon(BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher))
             .setContentIntent(pendingOpen)
             .setOngoing(false)
             .setProgress(0, 0, false)

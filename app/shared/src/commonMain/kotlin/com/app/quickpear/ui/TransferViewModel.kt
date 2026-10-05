@@ -230,9 +230,20 @@ class TransferViewModel(
         _uiState.update { it.copy(incomingSharedText = null) }
     }
 
+    private var activeTransferJob: Job? = null
+
+    fun cancelTransfer() {
+        activeTransferJob?.cancel()
+        activeNode?.cancelTransfer()
+        _uiState.update {
+            it.copy(statusMessage = "Transfer cancelled")
+        }
+    }
+
     fun sendFiles(peer: PeerDevice, paths: List<Path>) {
         val node = activeNode ?: return
-        viewModelScope.launch(Dispatchers.IO) {
+        activeTransferJob?.cancel()
+        activeTransferJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 var counter = 1
                 val fileMap = mutableMapOf<FileMetadata, Path>()
@@ -253,10 +264,16 @@ class TransferViewModel(
                         it.copy(statusMessage = "Sent ${fileMap.size} file(s) to ${peer.name}")
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                _uiState.update {
+                    it.copy(statusMessage = "Transfer to ${peer.name} cancelled")
+                }
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(statusMessage = "Failed to send file(s) to ${peer.name}: ${e.message}")
                 }
+            } finally {
+                activeTransferJob = null
             }
         }
     }

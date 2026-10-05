@@ -6,17 +6,24 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -31,105 +38,125 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.app.quickpear.domain.PeerDevice
-import kotlin.math.cos
-import kotlin.math.sin
 
+private val PearGreen = Color(0xFF6E9D24)
+private val WarmCream = Color(0xFFFFF6E9)
+private val WarmGray = Color(0xFFCECECC)
+private val SlateIndigo = Color(0xFF4B5B76)
+private val CardSurface = Color(0xFF353033)
+
+/**
+ * Modern compact scanning status header.
+ * Replaces cumbersome orbital bubbles with a clean animated pulse beacon and dynamic status.
+ * All detected peers are rendered directly in the scrollable vertical list to prevent overlapping.
+ */
 @Composable
 fun RadarView(
     devices: List<PeerDevice>,
-    selectedDevice: PeerDevice?,
-    onDeviceSelected: (PeerDevice) -> Unit,
+    selectedDevice: PeerDevice? = null,
+    onDeviceSelected: (PeerDevice) -> Unit = {},
     modifier: Modifier = Modifier,
-    sizeDp: Dp = 300.dp
+    sizeDp: Dp = Dp.Unspecified
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "RadarSweep")
-    val sweepProgress by infiniteTransition.animateFloat(
+    val pulseProgress by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 3000, easing = LinearEasing),
+            animation = tween(durationMillis = 2000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "RadarRadius"
     )
 
-    val primaryColor = MaterialTheme.colorScheme.primary
-
-    Box(
-        modifier = modifier.size(sizeDp),
-        contentAlignment = Alignment.Center
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = CardSurface),
+        border = BorderStroke(1.dp, SlateIndigo.copy(alpha = 0.35f))
     ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val centerOffset = Offset(size.width / 2f, size.height / 2f)
-            val maxRadius = size.width.coerceAtMost(size.height) / 2f
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Animated Pulse Beacon
+            Box(
+                modifier = Modifier.size(44.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val center = Offset(size.width / 2f, size.height / 2f)
+                    val maxRadius = size.width / 2f
 
-            // Concentric radar grid rings
-            for (i in 1..3) {
-                drawCircle(
-                    color = primaryColor.copy(alpha = 0.2f),
-                    radius = maxRadius * (i / 3f),
-                    center = centerOffset,
-                    style = Stroke(width = 1.dp.toPx())
+                    // Concentric static base ring
+                    drawCircle(
+                        color = PearGreen.copy(alpha = 0.2f),
+                        radius = maxRadius * 0.85f,
+                        center = center,
+                        style = Stroke(width = 1.dp.toPx())
+                    )
+
+                    // Expanding wave pulse
+                    drawCircle(
+                        color = PearGreen.copy(alpha = ((1f - pulseProgress) * 0.45f).coerceIn(0f, 0.45f)),
+                        radius = (maxRadius * 0.35f) + (maxRadius * 0.65f * pulseProgress),
+                        center = center,
+                        style = Stroke(width = 2.dp.toPx())
+                    )
+                }
+
+                // Inner glowing center beacon dot
+                Box(
+                    modifier = Modifier
+                        .size(14.dp)
+                        .clip(CircleShape)
+                        .background(PearGreen)
                 )
             }
 
-            // Expanding wave pulse
-            drawCircle(
-                color = primaryColor.copy(alpha = (1f - sweepProgress).coerceIn(0f, 0.4f)),
-                radius = maxRadius * sweepProgress,
-                center = centerOffset,
-                style = Stroke(width = 2.dp.toPx())
-            )
-        }
+            Spacer(modifier = Modifier.width(12.dp))
 
-        // Center host node
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clip(CircleShape)
-                .background(primaryColor),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = "Me",
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = 14.sp
-            )
-        }
+            // Status Typography
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (devices.isEmpty()) "Scanning for nearby devices..." else "${devices.size} device${if (devices.size > 1) "s" else ""} found nearby",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = WarmCream
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = if (devices.isEmpty()) "Visible on local Wi-Fi, hotspot & cloud" else "Select a device below to start transfer",
+                    fontSize = 11.sp,
+                    color = WarmGray
+                )
+            }
 
-        // Render discovered devices around center radar
-        devices.forEachIndexed { index, device ->
-            val angleRad = (2 * Math.PI / devices.size) * index
-            val radiusPx = (sizeDp.value / 2.5f)
-            val offsetX = (cos(angleRad) * radiusPx).dp
-            val offsetY = (sin(angleRad) * radiusPx).dp
+            Spacer(modifier = Modifier.width(8.dp))
 
-            val isSelected = selectedDevice?.id == device.id
-
+            // Status Pill Badge
             Box(
                 modifier = Modifier
-                    .offset(x = offsetX, y = offsetY)
-                    .clip(CircleShape)
-                    .background(
-                        if (isSelected) MaterialTheme.colorScheme.tertiary
-                        else MaterialTheme.colorScheme.secondaryContainer
-                    )
-                    .clickable { onDeviceSelected(device) }
-                    .padding(12.dp),
-                contentAlignment = Alignment.Center
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(PearGreen.copy(alpha = 0.15f))
+                    .border(BorderStroke(1.dp, PearGreen.copy(alpha = 0.35f)), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = device.name,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSecondaryContainer
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(PearGreen)
                     )
+                    Spacer(modifier = Modifier.width(5.dp))
                     Text(
-                        text = device.deviceType.name,
+                        text = if (devices.isEmpty()) "Scanning" else "Online (${devices.size})",
                         fontSize = 10.sp,
-                        color = if (isSelected) Color.White.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                        fontWeight = FontWeight.Bold,
+                        color = PearGreen
                     )
                 }
             }

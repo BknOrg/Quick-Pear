@@ -340,94 +340,107 @@ class QuickPearNode(
         proximityEngine.triggerBurstBeacon()
     }
 
+    @kotlin.concurrent.Volatile
+    private var activeSendingJob: kotlinx.coroutines.Job? = null
+
+    fun cancelTransfer(reason: String = "Transfer dibatalkan oleh pengguna") {
+        activeSendingJob?.cancel()
+        transferEngine.cancelTransfer(reason)
+    }
+
     suspend fun sendFiles(
         target: PeerDevice,
         files: Map<FileMetadata, Path>,
         sessionId: String = "session-${System.currentTimeMillis()}"
-    ) {
-        if (target.connectionType == com.app.quickpear.domain.ConnectionType.CLOUD_P2P) {
-            // Tier 1: Direct TCP Probe (if IP is reachable on LAN / public IP)
-            if (target.ipAddress.isNotBlank() && target.ipAddress != "cloud-relay") {
-                try {
-                    kotlinx.coroutines.withTimeout(2000L) {
-                        client.sendFiles(
-                            host = target.ipAddress,
-                            port = target.port,
-                            sessionId = sessionId,
-                            files = files,
-                            expectedPeerId = target.id
-                        )
-                    }
-                    return
-                } catch (_: Exception) {
-                    // Direct connection failed, proceed to Tier 2
-                }
-            }
-
-            // Tier 2: Local Hotspot Handover (High-speed Wi-Fi Direct if devices are physically nearby)
-            if (p2pLinkNegotiator.isHotspotSupported()) {
-                try {
-                    val hotspot = p2pLinkNegotiator.startLocalHotspot()
-                    if (hotspot != null) {
-                        try {
-                            val (accepted, receiverLocalIp) = signalingClient.probeHotspotHandover(
-                                targetPeer = target,
-                                ssid = hotspot.ssid,
-                                pass = hotspot.passphrase,
-                                hostIp = hotspot.hostIp,
-                                port = hotspot.port,
-                                sessionId = sessionId,
-                                timeoutMillis = 5000L
-                            )
-                            if (accepted && receiverLocalIp.isNotBlank()) {
-                                client.sendFiles(
-                                    host = receiverLocalIp,
-                                    port = target.port,
-                                    sessionId = sessionId,
-                                    files = files,
-                                    expectedPeerId = target.id
-                                )
-                                return
-                            }
-                        } finally {
-                            p2pLinkNegotiator.stopLocalHotspot()
-                        }
-                    }
-                } catch (_: Exception) {
-                    p2pLinkNegotiator.stopLocalHotspot()
-                }
-            }
-
-            // Tier 3: Fallback to Cloud Relay (256 KB Chunks with Sliding Window)
-            signalingClient.sendFiles(target, files, sessionId)
-            return
-        }
-        triggerBurstBeacon()
-        var link: com.app.quickpear.network.P2pLink? = null
-        val (targetHost, targetPort) = if (target.connectionType == com.app.quickpear.domain.ConnectionType.WIFI_DIRECT && p2pLinkNegotiator.isSupported()) {
-            val p2p = p2pLinkNegotiator.connectClientLink(target)
-            link = p2p
-            Pair(p2p.remoteIp, p2p.port)
-        } else {
-            Pair(target.ipAddress, target.port)
-        }
-
+    ) = kotlinx.coroutines.coroutineScope {
+        activeSendingJob = coroutineContext[kotlinx.coroutines.Job]
         try {
-            client.sendFiles(
-                host = targetHost,
-                port = targetPort,
-                sessionId = sessionId,
-                files = files,
-                expectedPeerId = target.id
-            )
-        } catch (e: Exception) {
-            if (trustStore.isTrusted(target.id)) {
+            if (target.connectionType == com.app.quickpear.domain.ConnectionType.CLOUD_P2P) {
+                // Tier 1: Direct TCP Probe (if IP is reachable on LAN / public IP)
+                if (target.ipAddress.isNotBlank() && target.ipAddress != "cloud-relay") {
+                    try {
+                        kotlinx.coroutines.withTimeout(2000L) {
+                            client.sendFiles(
+                                host = target.ipAddress,
+                                port = target.port,
+                                sessionId = sessionId,
+                                files = files,
+                                expectedPeerId = target.id
+                            )
+                        }
+                        return@coroutineScope
+                    } catch (_: Exception) {
+                        // Direct connection failed, proceed to Tier 2
+                    }
+                }
+
+                // Tier 2: Local Hotspot Handover (High-speed Wi-Fi Direct if devices are physically nearby)
+                if (p2pLinkNegotiator.isHotspotSupported()) {
+                    try {
+                        val hotspot = p2pLinkNegotiator.startLocalHotspot()
+                        if (hotspot != null) {
+                            try {
+                                val (accepted, receiverLocalIp) = signalingClient.probeHotspotHandover(
+                                    targetPeer = target,
+                                    ssid = hotspot.ssid,
+                                    pass = hotspot.passphrase,
+                                    hostIp = hotspot.hostIp,
+                                    port = hotspot.port,
+                                    sessionId = sessionId,
+                                    timeoutMillis = 5000L
+                                )
+                                if (accepted && receiverLocalIp.isNotBlank()) {
+                                    client.sendFiles(
+                                        host = receiverLocalIp,
+                                        port = target.port,
+                                        sessionId = sessionId,
+                                        files = files,
+                                        expectedPeerId = target.id
+                                    )
+                                    return@coroutineScope
+                                }
+                            } finally {
+                                p2pLinkNegotiator.stopLocalHotspot()
+                            }
+                        }
+                    } catch (_: Exception) {
+                        p2pLinkNegotiator.stopLocalHotspot()
+                    }
+                }
+
+                // Tier 3: Fallback to Cloud Relay (256 KB Chunks with Sliding Window)
                 signalingClient.sendFiles(target, files, sessionId)
+                return@coroutineScope
+            }
+            triggerBurstBeacon()
+            var link: com.app.quickpear.network.P2pLink? = null
+            val (targetHost, targetPort) = if (target.connectionType == com.app.quickpear.domain.ConnectionType.WIFI_DIRECT && p2pLinkNegotiator.isSupported()) {
+                val p2p = p2pLinkNegotiator.connectClientLink(target)
+                link = p2p
+                Pair(p2p.remoteIp, p2p.port)
             } else {
-                throw e
+                Pair(target.ipAddress, target.port)
+            }
+
+            try {
+                client.sendFiles(
+                    host = targetHost,
+                    port = targetPort,
+                    sessionId = sessionId,
+                    files = files,
+                    expectedPeerId = target.id
+                )
+            } catch (e: Exception) {
+                if (trustStore.isTrusted(target.id)) {
+                    signalingClient.sendFiles(target, files, sessionId)
+                } else {
+                    throw e
+                }
+            } finally {
+                link?.release()
             }
         } finally {
-            link?.release()
+            activeSendingJob = null
         }
     }
 

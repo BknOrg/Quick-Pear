@@ -38,7 +38,10 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun ModernTrayMenu(
     isAutostart: Boolean,
+    isTransferring: Boolean = false,
     onOpenApp: () -> Unit,
+    onOpenDownloads: () -> Unit,
+    onCancelTransfer: () -> Unit = {},
     onToggleAutostart: () -> Unit,
     onQuit: () -> Unit
 ) {
@@ -67,7 +70,7 @@ fun ModernTrayMenu(
                     modifier = Modifier
                         .size(8.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFF6E9D24))
+                        .background(if (isTransferring) Color(0xFF405DB7) else Color(0xFF6E9D24))
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
@@ -78,7 +81,7 @@ fun ModernTrayMenu(
                         color = Color(0xFFFFF6E9)
                     )
                     Text(
-                        text = "Running in background",
+                        text = if (isTransferring) "Transfer in progress..." else "Running in background",
                         fontSize = 10.sp,
                         color = Color(0xFFCECECC).copy(alpha = 0.8f)
                     )
@@ -100,7 +103,23 @@ fun ModernTrayMenu(
                 onClick = onOpenApp
             )
 
-            // Action 2: Launch on Startup
+            // Action 2: Open Downloads Folder
+            ModernTrayMenuItem(
+                label = "Open Downloads Folder",
+                onClick = onOpenDownloads
+            )
+
+            // Action 2.5: Cancel Transfer (Only if active)
+            if (isTransferring) {
+                ModernTrayMenuItem(
+                    label = "Cancel Transfer",
+                    textColor = Color(0xFFEF5350),
+                    hoverBg = Color(0xFFEF5350).copy(alpha = 0.2f),
+                    onClick = onCancelTransfer
+                )
+            }
+
+            // Action 3: Launch on Startup
             ModernTrayMenuItem(
                 label = "Launch on Startup",
                 trailing = {
@@ -125,7 +144,7 @@ fun ModernTrayMenu(
             )
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Action 3: Quit
+            // Action 4: Quit
             ModernTrayMenuItem(
                 label = "Quit",
                 textColor = Color(0xFFEF5350),

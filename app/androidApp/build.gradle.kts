@@ -43,6 +43,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // Default ke debug signing agar APK release bisa langsung di-install di perangkat Android
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

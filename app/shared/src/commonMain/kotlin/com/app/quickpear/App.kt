@@ -2,8 +2,12 @@ package com.app.quickpear
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import org.jetbrains.compose.resources.painterResource
+import quickpear.app.shared.generated.resources.Res
+import quickpear.app.shared.generated.resources.app_logo
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -174,15 +178,11 @@ fun App(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(38.dp)
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .background(QuickPearColors.PearGreen),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text("Q", color = Color.White, fontWeight = FontWeight.Black, fontSize = 20.sp)
-                                    }
+                                    Image(
+                                        painter = painterResource(Res.drawable.app_logo),
+                                        contentDescription = "Quick Pear Logo",
+                                        modifier = Modifier.size(38.dp)
+                                    )
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Column {
                                         Text(
@@ -402,12 +402,29 @@ fun App(
                                                 maxLines = 1,
                                                 modifier = Modifier.weight(1f)
                                             )
+                                            Spacer(modifier = Modifier.width(8.dp))
                                             Text(
                                                 text = "${(progress.progressPercentage * 100).toInt()}%",
                                                 style = MaterialTheme.typography.labelMedium,
                                                 fontWeight = FontWeight.Bold,
                                                 color = QuickPearColors.PearGreen
                                             )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(Color(0xFFEF5350).copy(alpha = 0.2f))
+                                                    .clickable { viewModel.cancelTransfer() }
+                                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = "Cancel",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFFEF5350)
+                                                )
+                                            }
                                         }
                                         Spacer(modifier = Modifier.height(6.dp))
                                         LinearProgressIndicator(
@@ -534,35 +551,14 @@ fun NearbyDevicesScreen(
             }
         }
 
-        // Compact Radar Pulse Section
+        // Compact Discovery Scanning Header
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
-                border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.35f))
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    RadarView(
-                        devices = devices,
-                        selectedDevice = selectedDevice,
-                        onDeviceSelected = onDeviceSelected,
-                        sizeDp = 140.dp
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = if (devices.isEmpty()) "Scanning for nearby devices..." else "${devices.size} device(s) found",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = QuickPearColors.WarmGray
-                    )
-                }
-            }
+            RadarView(
+                devices = devices,
+                selectedDevice = selectedDevice,
+                onDeviceSelected = onDeviceSelected,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
 
         // Section Header

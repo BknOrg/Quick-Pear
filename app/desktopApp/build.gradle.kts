@@ -27,17 +27,28 @@ compose.desktop {
             description = "Quick Pear Local Wireless File Transfer"
             copyright = "© 2025 Quick Pear Team. All rights reserved."
             vendor = "Quick Pear"
+            
+
+
+            includeAllModules = true
+
+            buildTypes.release.proguard {
+                isEnabled.set(false)
+            }
 
             windows {
                 menuGroup = "Quick Pear"
                 shortcut = true
+                iconFile.set(project.file("src/main/resources/icon.ico"))
             }
             linux {
                 shortcut = true
+                iconFile.set(project.file("src/main/resources/icon.png"))
             }
             macOS {
                 bundleID = "com.app.quickpear"
                 dockName = "Quick Pear"
+                iconFile.set(project.file("src/main/resources/icon.icns"))
             }
         }
     }

@@ -5,8 +5,10 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import com.app.quickpear.R
 import com.app.quickpear.domain.MetadataRequest
 import com.app.quickpear.security.PeerIdentity
 import com.app.quickpear.session.ApprovalDecision
@@ -70,6 +72,7 @@ class NotificationApprovalHandler(
             .setContentText("$fileCount berkas ($sizeFormatted)")
             .setStyle(NotificationCompat.BigTextStyle().bigText("${peer.name} ingin mengirim $fileCount berkas ($sizeFormatted). Pilih tindakan di bawah:"))
             .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setLargeIcon(BitmapFactory.decodeResource(context.resources, R.mipmap.ic_launcher))
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
@@ -112,6 +115,7 @@ class NotificationApprovalHandler(
             .setContentText("Kode: $sasCode dari ${peer.name}")
             .setStyle(NotificationCompat.BigTextStyle().bigText("Perangkat '${peer.name}' ingin dipasangkan.\nKode verifikasi: $sasCode\nApakah kode cocok di kedua layar?"))
             .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setLargeIcon(BitmapFactory.decodeResource(context.resources, R.mipmap.ic_launcher))
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setDefaults(NotificationCompat.DEFAULT_ALL)

@@ -31,6 +31,13 @@ class TransferEngine(
     private val chunkWriter = ChunkWriter(fileSystem)
     private val fileChunker = FileChunker(fileSystem)
 
+    @kotlin.concurrent.Volatile
+    private var activeConnection: SocketConnection? = null
+    @kotlin.concurrent.Volatile
+    private var currentReceivingFileName: String? = null
+    @kotlin.concurrent.Volatile
+    private var isCancelled = false
+
     private fun failed(message: String, totalBytes: Long = 0) {
         _progressState.value = TransferProgress(
             fileId = 0, fileName = "", bytesTransferred = 0, totalBytes = totalBytes,
@@ -41,6 +48,25 @@ class TransferEngine(
 
     fun updateProgress(progress: TransferProgress?) {
         _progressState.value = progress
+    }
+
+    /**
+     * Cancels the active file transfer, cleans up partial files on receiver, and terminates connection.
+     */
+    fun cancelTransfer(reason: String = "Transfer dibatalkan oleh pengguna") {
+        isCancelled = true
+        val receivingFile = currentReceivingFileName
+        if (receivingFile != null) {
+            try {
+                partFileManager.resetPart(receivingFile)
+            } catch (_: Exception) {}
+            currentReceivingFileName = null
+        }
+        try {
+            activeConnection?.close()
+        } catch (_: Exception) {}
+        activeConnection = null
+        failed(reason)
     }
 
     /** Sends [chunkData] and waits for a successful ACK, retrying up to [MAX_CHUNK_ATTEMPTS] times. */
@@ -69,6 +95,8 @@ class TransferEngine(
         sessionId: String,
         filesMap: Map<FileMetadata, Path>
     ) = withContext(Dispatchers.IO) {
+        isCancelled = false
+        activeConnection = connection
         try {
             val files = filesMap.keys.toList()
             connection.sendMetadataRequest(MetadataRequest(sessionId = sessionId, files = files))
@@ -148,9 +176,16 @@ class TransferEngine(
 
             _progressState.value = _progressState.value?.copy(status = TransferStatus.COMPLETED)
         } catch (e: CancellationException) {
+            failed("Transfer dibatalkan oleh pengguna")
             throw e
         } catch (e: Exception) {
-            failed("Transfer gagal: ${e.message}")
+            if (isCancelled) {
+                failed("Transfer dibatalkan oleh pengguna")
+            } else {
+                failed("Transfer gagal: ${e.message}")
+            }
+        } finally {
+            activeConnection = null
         }
     }
 
@@ -161,6 +196,8 @@ class TransferEngine(
         connection: SocketConnection,
         onApprovalRequested: suspend (MetadataRequest) -> Boolean
     ) = withContext(Dispatchers.IO) {
+        isCancelled = false
+        activeConnection = connection
         try {
             val header = connection.readHeader()
             if (header.messageType != ProtocolConstants.MSG_METADATA_REQ) {
@@ -189,6 +226,7 @@ class TransferEngine(
             val startTime = System.currentTimeMillis()
 
             for ((index, metadata) in request.files.withIndex()) {
+                currentReceivingFileName = metadata.fileName
                 val startChunk = if (index == 0) resumeOffset else 0L
                 if (startChunk == 0L) partFileManager.resetPart(metadata.fileName)
 
@@ -252,6 +290,7 @@ class TransferEngine(
                                 partFileManager.finalizeTransfer(metadata.fileName, metadata.relativePath)
                                 connection.sendTransferCompleteAck(fileId, 0x00.toByte())
                                 fileDone = true
+                                currentReceivingFileName = null
                             } else {
                                 // Corrupted: discard so the next attempt restarts from chunk 0.
                                 partFileManager.resetPart(metadata.fileName)
@@ -267,9 +306,27 @@ class TransferEngine(
 
             _progressState.value = _progressState.value?.copy(status = TransferStatus.COMPLETED)
         } catch (e: CancellationException) {
+            val partial = currentReceivingFileName
+            if (partial != null) {
+                try { partFileManager.resetPart(partial) } catch (_: Exception) {}
+                currentReceivingFileName = null
+            }
+            failed("Transfer dibatalkan oleh pengguna")
             throw e
         } catch (e: Exception) {
-            failed("Penerimaan gagal: ${e.message}")
+            val partial = currentReceivingFileName
+            if (partial != null) {
+                try { partFileManager.resetPart(partial) } catch (_: Exception) {}
+                currentReceivingFileName = null
+            }
+            if (isCancelled) {
+                failed("Transfer dibatalkan oleh pengguna")
+            } else {
+                failed("Penerimaan gagal: ${e.message}")
+            }
+        } finally {
+            activeConnection = null
+            currentReceivingFileName = null
         }
     }
 
