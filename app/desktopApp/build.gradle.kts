@@ -23,7 +23,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe, TargetFormat.Deb, TargetFormat.Dmg, TargetFormat.Pkg)
             packageName = "Quick Pear"
-            packageVersion = "1.1.0"
+            packageVersion = "1.1.1"
             description = "Quick Pear Local Wireless File Transfer"
             copyright = "© 2025 Quick Pear Team. All rights reserved."
             vendor = "Quick Pear"
@@ -31,12 +31,14 @@ compose.desktop {
 
 
             includeAllModules = true
+            appResourcesRootDir.set(project.file("packaging/windows"))
 
             buildTypes.release.proguard {
                 isEnabled.set(false)
             }
 
             windows {
+                perUserInstall = true
                 menuGroup = "Quick Pear"
                 shortcut = true
                 iconFile.set(project.file("src/main/resources/icon.ico"))

@@ -18,8 +18,11 @@ data class TrustedDevice(
     val publicKey: String,
     val addedAtMillis: Long,
     val lastKnownIp: String? = null,
-    val lastKnownPort: Int = 8888
-)
+    val lastKnownPort: Int = 8888,
+    val customName: String? = null
+) {
+    fun displayName(): String = customName?.takeIf { it.isNotBlank() } ?: name
+}
 
 /**
  * Persistent list of devices allowed to send files without being asked each time.
@@ -41,7 +44,7 @@ class TrustStore(
 
     fun get(deviceId: String): TrustedDevice? = _devices.value.firstOrNull { it.id == deviceId }
 
-    /** Adds (or refreshes the name of) a trusted device. Rejects ids that do not match the key. */
+    /** Adds (or refreshes the name of) a trusted device. Preserves customName if set. Rejects ids that do not match the key. */
     fun add(
         deviceId: String,
         name: String,
@@ -55,9 +58,10 @@ class TrustStore(
             val existing = list.firstOrNull { it.id == deviceId }
             val merged = if (existing != null) {
                 existing.copy(
-                    name = name,
+                    name = name, // Update original advertised name from peer
                     lastKnownIp = ipAddress ?: existing.lastKnownIp,
-                    lastKnownPort = port
+                    lastKnownPort = port,
+                    customName = existing.customName // Preserve custom alias!
                 )
             } else {
                 entry
@@ -78,13 +82,30 @@ class TrustStore(
 
     fun rename(deviceId: String, newName: String) {
         val trimmed = newName.trim()
-        if (trimmed.isEmpty()) return
         _devices.update { list ->
             list.map {
-                if (it.id == deviceId) it.copy(name = trimmed) else it
+                if (it.id == deviceId) {
+                    it.copy(customName = if (trimmed.isEmpty() || trimmed == it.name) null else trimmed)
+                } else it
             }
         }
         save()
+    }
+
+    /**
+     * Resolves names for a peer:
+     * Returns Pair(primaryDisplayName, subtitleOrOriginalName).
+     * If peer has a custom alias: Pair(customName, peer.name).
+     * If not: Pair(peer.name, null).
+     */
+    fun resolveNames(peerId: String, advertisedName: String): Pair<String, String?> {
+        val trusted = get(peerId)
+        val custom = trusted?.customName?.takeIf { it.isNotBlank() }
+        return if (custom != null) {
+            Pair(custom, advertisedName)
+        } else {
+            Pair(advertisedName, null)
+        }
     }
 
     fun remove(deviceId: String) {

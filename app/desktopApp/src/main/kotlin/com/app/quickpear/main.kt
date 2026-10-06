@@ -76,6 +76,11 @@ private fun createFallbackIconPainter(): Painter {
 }
 
 fun main(args: Array<String>) {
+    if (args.contains("--shutdown") || args.contains("--quit") || args.contains("--exit")) {
+        SingleInstanceManager.requestShutdown()
+        exitProcess(0)
+    }
+
     val initialVisible = !args.contains("--background") && !args.contains("--send")
     val initialSendFiles = if (args.contains("--send")) {
         val sendIdx = args.indexOf("--send")
@@ -88,13 +93,16 @@ fun main(args: Array<String>) {
     var onSendFilesRequested: ((List<String>) -> Unit)? = null
 
     val singleInstance = SingleInstanceManager { command ->
-        if (command.startsWith("--send\t") || command == "--send") {
-            val filePaths = command.split("\t").drop(1).filter { it.isNotBlank() }
+        val cmd = command.trim()
+        if (cmd.equals("SHUTDOWN", ignoreCase = true) || cmd.equals("QUIT", ignoreCase = true) || cmd.equals("EXIT", ignoreCase = true)) {
+            exitProcess(0)
+        } else if (cmd.startsWith("--send\t") || cmd == "--send") {
+            val filePaths = cmd.split("\t").drop(1).filter { it.isNotBlank() }
             onSendFilesRequested?.invoke(filePaths)
-        } else if (command.startsWith("--send ")) {
-            val filePaths = listOf(command.removePrefix("--send ").trim()).filter { it.isNotBlank() }
+        } else if (cmd.startsWith("--send ")) {
+            val filePaths = listOf(cmd.removePrefix("--send ").trim()).filter { it.isNotBlank() }
             onSendFilesRequested?.invoke(filePaths)
-        } else if (command.startsWith("OPEN") || command.isEmpty()) {
+        } else if (cmd.startsWith("OPEN") || cmd.isEmpty()) {
             onOpenRequested?.invoke()
         }
     }
@@ -107,6 +115,8 @@ fun main(args: Array<String>) {
     // Register Windows 11 & 10 Explorer context menu and SendTo shortcut asynchronously in background
     Thread {
         try {
+            val resolvedExe = WindowsContextMenuRegistry.resolveExecutablePath()
+            WindowsContextMenuRegistry.cleanLegacySystemInstallations(resolvedExe)
             SendToInstaller.ensureInstalled()
             WindowsContextMenuRegistry.ensureRegistered()
             WindowsContextMenuRegistry.createCleanUninstallScript()
@@ -120,6 +130,8 @@ fun main(args: Array<String>) {
     application {
         val scope = rememberCoroutineScope()
         var isWindowVisible by remember { mutableStateOf(initialVisible) }
+        val mainWindowState = rememberWindowState(size = DpSize(960.dp, 640.dp))
+        var bringToFrontTrigger by remember { mutableStateOf(0) }
         var isAutostart by remember { mutableStateOf(DesktopAutostartManager.isAutostartEnabled()) }
         var pendingSendFiles by remember { mutableStateOf(initialSendFiles) }
         val icon = remember { createIconPainter() }
@@ -180,6 +192,8 @@ fun main(args: Array<String>) {
         onOpenRequested = {
             EventQueue.invokeLater {
                 isWindowVisible = true
+                mainWindowState.isMinimized = false
+                bringToFrontTrigger++
                 node.setMode(DiscoveryMode.ACTIVE)
             }
         }
@@ -296,6 +310,8 @@ fun main(args: Array<String>) {
             onAction = {
                 isTrayMenuVisible = false
                 isWindowVisible = true
+                mainWindowState.isMinimized = false
+                bringToFrontTrigger++
                 node.setMode(DiscoveryMode.ACTIVE)
             }
         )
@@ -336,6 +352,8 @@ fun main(args: Array<String>) {
                     onOpenApp = {
                         isTrayMenuVisible = false
                         isWindowVisible = true
+                        mainWindowState.isMinimized = false
+                        bringToFrontTrigger++
                         node.setMode(DiscoveryMode.ACTIVE)
                     },
                     onOpenDownloads = {
@@ -368,8 +386,15 @@ fun main(args: Array<String>) {
                     node.setMode(DiscoveryMode.BACKGROUND)
                 },
                 title = "Quick Pear",
-                icon = icon
+                icon = icon,
+                state = mainWindowState
             ) {
+                LaunchedEffect(bringToFrontTrigger) {
+                    if (bringToFrontTrigger > 0) {
+                        window.toFront()
+                        window.requestFocus()
+                    }
+                }
                 App(viewModel = remember { com.app.quickpear.ui.TransferViewModel(node) })
             }
         }

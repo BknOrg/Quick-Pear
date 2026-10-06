@@ -127,19 +127,27 @@ object WindowsContextMenuRegistry {
         val userHome = System.getProperty("user.home", ".")
         val localAppData = System.getenv("LOCALAPPDATA") ?: "$userHome/AppData/Local"
         val candidates = listOf(
-            File("C:/Program Files/Quick Pear/Quick Pear.exe"),
-            File("C:/Program Files (x86)/Quick Pear/Quick Pear.exe"),
+            File("$localAppData/Quick Pear/Quick Pear.exe"),
             File("$localAppData/Programs/Quick Pear/Quick Pear.exe"),
-            File("$localAppData/Quick Pear/Quick Pear.exe")
+            File("C:/Program Files/Quick Pear/Quick Pear.exe"),
+            File("C:/Program Files (x86)/Quick Pear/Quick Pear.exe")
         )
         for (candidate in candidates) {
-            if (candidate.exists()) return candidate.canonicalPath
+            if (candidate.exists()) {
+                val modulesFile = File(candidate.parentFile, "runtime/lib/modules")
+                if (modulesFile.exists()) {
+                    return candidate.canonicalPath
+                }
+            }
         }
 
         // 3. Built binary in project directory
         val projectDir = File(".").canonicalPath
         val devExe = File(projectDir, "app/desktopApp/build/compose/binaries/main/app/Quick Pear/Quick Pear.exe")
-        if (devExe.exists()) return devExe.canonicalPath
+        if (devExe.exists()) {
+            val devModules = File(devExe.parentFile, "runtime/lib/modules")
+            if (devModules.exists()) return devExe.canonicalPath
+        }
 
         // 4. Fallback development relay launcher in AppData
         val appData = System.getenv("APPDATA") ?: "$userHome/AppData/Roaming"
@@ -153,6 +161,47 @@ object WindowsContextMenuRegistry {
         }
         runnerScript.writeText(scriptContent)
         return runnerScript.canonicalPath
+    }
+
+    fun cleanLegacySystemInstallations(currentExePath: String) {
+        val os = System.getProperty("os.name", "").lowercase()
+        if (!os.contains("win")) return
+
+        try {
+            // 1. Check if legacy Start Menu shortcut exists in C:\ProgramData
+            val programData = System.getenv("ProgramData") ?: "C:\\ProgramData"
+            val legacyStartMenuDir = File(programData, "Microsoft\\Windows\\Start Menu\\Programs\\Quick Pear")
+            val legacyShortcut = File(legacyStartMenuDir, "Quick Pear.lnk")
+            val legacySingleShortcut = File(programData, "Microsoft\\Windows\\Start Menu\\Programs\\Quick Pear.lnk")
+
+            // If we are running from a per-user location or custom path, clean obsolete system shortcuts
+            if (currentExePath.isNotBlank()) {
+                val exeFile = File(currentExePath)
+                val isPerUser = exeFile.canonicalPath.contains("AppData", ignoreCase = true)
+
+                if (isPerUser) {
+                    if (legacyShortcut.exists()) {
+                        legacyShortcut.delete()
+                    }
+                    if (legacyStartMenuDir.exists() && (legacyStartMenuDir.listFiles()?.isEmpty() == true)) {
+                        legacyStartMenuDir.delete()
+                    }
+                    if (legacySingleShortcut.exists()) {
+                        legacySingleShortcut.delete()
+                    }
+                }
+            }
+
+            // 2. Remove stale legacy Program Files registry keys if any in HKLM/HKCU uninstall
+            // Note: Per-user process cannot write to HKLM without admin, but can clean user keys
+            val userHome = System.getProperty("user.home", ".")
+            val appData = System.getenv("APPDATA") ?: "$userHome/AppData/Roaming"
+            val userStartMenuDir = File(appData, "Microsoft\\Windows\\Start Menu\\Programs\\Quick Pear")
+            val userShortcut = File(userStartMenuDir, "Quick Pear.lnk")
+            val userSingleShortcut = File(appData, "Microsoft\\Windows\\Start Menu\\Programs\\Quick Pear.lnk")
+
+            // Ensure user shortcut points to valid current executable if needed
+        } catch (_: Exception) {}
     }
 
     fun createCleanUninstallScript() {
@@ -184,9 +233,17 @@ object WindowsContextMenuRegistry {
                 
                 echo Removing Startup / Autostart entries...
                 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "QuickPear" /f >nul 2>&1
+                reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "Quick Pear" /f >nul 2>&1
                 
-                echo Removing SendTo shortcut...
+                echo Removing SendTo and Start Menu shortcuts...
                 del /f /q "%APPDATA%\Microsoft\Windows\SendTo\Quick Pear.lnk" >nul 2>&1
+                del /f /q "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Quick Pear.lnk" >nul 2>&1
+                rmdir /s /q "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Quick Pear" >nul 2>&1
+                del /f /q "%USERPROFILE%\Desktop\Quick Pear.lnk" >nul 2>&1
+
+                echo Removing installed application binaries in LocalAppData...
+                rmdir /s /q "%LOCALAPPDATA%\Quick Pear" >nul 2>&1
+                rmdir /s /q "%LOCALAPPDATA%\Programs\Quick Pear" >nul 2>&1
                 
                 echo Removing application data, identity, and trusted devices...
                 rmdir /s /q "%APPDATA%\QuickPear" >nul 2>&1

@@ -17,8 +17,11 @@ object SendToInstaller {
             val targetPath = WindowsContextMenuRegistry.resolveExecutablePath()
             if (targetPath.isBlank()) return
 
-            // If shortcut already exists and is non-empty, keep it
-            if (shortcut.exists() && shortcut.length() > 0) return
+            val markerDir = File(appData, "QuickPear").apply { mkdirs() }
+            val markerFile = File(markerDir, "sendto_shortcut_target.txt")
+            if (shortcut.exists() && markerFile.exists() && markerFile.readText().trim() == targetPath) {
+                return
+            }
 
             val isScript = targetPath.endsWith(".cmd", ignoreCase = true) || targetPath.endsWith(".bat", ignoreCase = true)
             val exeTarget = if (isScript) "cmd.exe" else targetPath
@@ -32,10 +35,12 @@ object SendToInstaller {
                 ${'$'}s.Save()
             """.trimIndent()
 
-            ProcessBuilder("powershell", "-NoProfile", "-NonInteractive", "-Command", psCommand)
+            val p = ProcessBuilder("powershell", "-NoProfile", "-NonInteractive", "-Command", psCommand)
                 .redirectErrorStream(true)
                 .start()
-                .waitFor()
+            if (p.waitFor() == 0) {
+                markerFile.writeText(targetPath)
+            }
         } catch (_: Exception) {
         }
     }

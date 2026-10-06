@@ -15,14 +15,14 @@ class AdaptiveDiscoveryTest {
 
     @Test
     fun testDiscoveryModeIntervals() {
-        assertEquals(3_000L, DiscoveryMode.ACTIVE.beaconIntervalMillis)
-        assertEquals(10_000L, DiscoveryMode.ACTIVE.ttlMillis)
+        assertEquals(2_000L, DiscoveryMode.ACTIVE.beaconIntervalMillis)
+        assertEquals(6_000L, DiscoveryMode.ACTIVE.ttlMillis)
 
-        assertEquals(20_000L, DiscoveryMode.BACKGROUND.beaconIntervalMillis)
-        assertEquals(65_000L, DiscoveryMode.BACKGROUND.ttlMillis)
+        assertEquals(6_000L, DiscoveryMode.BACKGROUND.beaconIntervalMillis)
+        assertEquals(20_000L, DiscoveryMode.BACKGROUND.ttlMillis)
 
-        assertEquals(60_000L, DiscoveryMode.POWER_SAVER.beaconIntervalMillis)
-        assertEquals(185_000L, DiscoveryMode.POWER_SAVER.ttlMillis)
+        assertEquals(15_000L, DiscoveryMode.POWER_SAVER.beaconIntervalMillis)
+        assertEquals(45_000L, DiscoveryMode.POWER_SAVER.ttlMillis)
     }
 
     @Test

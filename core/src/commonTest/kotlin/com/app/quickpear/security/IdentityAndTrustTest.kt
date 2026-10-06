@@ -95,9 +95,37 @@ class IdentityAndTrustTest {
         val peer = DeviceIdentity.generate()
         store.add(peer.deviceId, "Old Name", peer.publicKey)
         assertEquals("Old Name", store.get(peer.deviceId)?.name)
+        assertEquals("Old Name", store.get(peer.deviceId)?.displayName())
+        assertNull(store.get(peer.deviceId)?.customName)
 
+        // Rename sets customName
         store.rename(peer.deviceId, "My Renamed Device")
-        assertEquals("My Renamed Device", store.get(peer.deviceId)?.name)
+        val renamed = store.get(peer.deviceId)
+        assertEquals("Old Name", renamed?.name)
+        assertEquals("My Renamed Device", renamed?.customName)
+        assertEquals("My Renamed Device", renamed?.displayName())
+
+        // Re-adding device from a new beacon with changed original name preserves customName
+        store.add(peer.deviceId, "Brand New Advertised Name", peer.publicKey)
+        val refreshed = store.get(peer.deviceId)
+        assertEquals("Brand New Advertised Name", refreshed?.name)
+        assertEquals("My Renamed Device", refreshed?.customName)
+        assertEquals("My Renamed Device", refreshed?.displayName())
+
+        // Test resolveNames
+        val resolvedWithCustom = store.resolveNames(peer.deviceId, "Brand New Advertised Name")
+        assertEquals("My Renamed Device", resolvedWithCustom.first)
+        assertEquals("Brand New Advertised Name", resolvedWithCustom.second)
+
+        // Blank rename clears customName back to original name
+        store.rename(peer.deviceId, "")
+        val cleared = store.get(peer.deviceId)
+        assertNull(cleared?.customName)
+        assertEquals("Brand New Advertised Name", cleared?.displayName())
+
+        val resolvedWithoutCustom = store.resolveNames(peer.deviceId, "Brand New Advertised Name")
+        assertEquals("Brand New Advertised Name", resolvedWithoutCustom.first)
+        assertNull(resolvedWithoutCustom.second)
     }
 
     @Test

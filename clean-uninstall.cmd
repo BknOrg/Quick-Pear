@@ -17,9 +17,17 @@ reg delete "HKCU\Software\Classes\Directory\Background\shell\Kirim dengan Quick 
 
 echo Removing Startup / Autostart entries...
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "QuickPear" /f >nul 2>&1
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "Quick Pear" /f >nul 2>&1
 
-echo Removing SendTo shortcut...
+echo Removing SendTo and Start Menu shortcuts...
 del /f /q "%APPDATA%\Microsoft\Windows\SendTo\Quick Pear.lnk" >nul 2>&1
+del /f /q "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Quick Pear.lnk" >nul 2>&1
+rmdir /s /q "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Quick Pear" >nul 2>&1
+del /f /q "%USERPROFILE%\Desktop\Quick Pear.lnk" >nul 2>&1
+
+echo Removing installed application binaries in LocalAppData...
+rmdir /s /q "%LOCALAPPDATA%\Quick Pear" >nul 2>&1
+rmdir /s /q "%LOCALAPPDATA%\Programs\Quick Pear" >nul 2>&1
 
 echo Removing application data, identity, and trusted devices...
 rmdir /s /q "%APPDATA%\QuickPear" >nul 2>&1

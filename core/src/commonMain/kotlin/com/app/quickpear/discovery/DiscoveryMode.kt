@@ -10,12 +10,12 @@ enum class DiscoveryMode(
     val beaconIntervalMillis: Long,
     val ttlMillis: Long
 ) {
-    /** Active UI foreground: fast discovery (every 3s, expires in 10s). */
-    ACTIVE(beaconIntervalMillis = 3_000L, ttlMillis = 10_000L),
+    /** Active UI foreground: fast discovery (every 2s, expires in 6s). */
+    ACTIVE(beaconIntervalMillis = 2_000L, ttlMillis = 6_000L),
 
-    /** Background service: battery efficient (every 20s, expires in 65s). */
-    BACKGROUND(beaconIntervalMillis = 20_000L, ttlMillis = 65_000L),
+    /** Background service: responsive and efficient (every 6s, expires in 20s). */
+    BACKGROUND(beaconIntervalMillis = 6_000L, ttlMillis = 20_000L),
 
-    /** Screen off or OS battery saver: ultra low power (every 60s, expires in 185s). */
-    POWER_SAVER(beaconIntervalMillis = 60_000L, ttlMillis = 185_000L)
+    /** Screen off or OS battery saver: ultra low power (every 15s, expires in 45s). */
+    POWER_SAVER(beaconIntervalMillis = 15_000L, ttlMillis = 45_000L)
 }

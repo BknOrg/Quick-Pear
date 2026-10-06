@@ -63,4 +63,19 @@ class SingleInstanceManager(
         } catch (_: Exception) {
         }
     }
+
+    companion object {
+        fun requestShutdown(port: Int = 18887, timeoutMs: Int = 1500): Boolean {
+            return try {
+                val client = Socket()
+                client.connect(java.net.InetSocketAddress("127.0.0.1", port), timeoutMs)
+                val writer = PrintWriter(client.getOutputStream(), true)
+                writer.println("SHUTDOWN")
+                client.close()
+                true
+            } catch (_: Exception) {
+                false
+            }
+        }
+    }
 }

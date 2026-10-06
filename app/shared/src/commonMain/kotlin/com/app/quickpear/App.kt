@@ -138,6 +138,7 @@ fun App(
     val state by viewModel.uiState.collectAsState()
     var selectedTab by remember { mutableStateOf(AppTab.NEARBY) }
     var textTargetPeer by remember { mutableStateOf<PeerDevice?>(null) }
+    var deviceToRename by remember { mutableStateOf<TrustedDevice?>(null) }
 
     val filePickerLauncher = com.app.quickpear.ui.rememberFilePickerLauncher { peer, paths ->
         viewModel.sendFiles(peer, paths)
@@ -294,6 +295,7 @@ fun App(
                                 onPairClicked = { viewModel.initiatePairing(it) },
                                 onSendClicked = { filePickerLauncher(it) },
                                 onSendTextClicked = { textTargetPeer = it },
+                                onRenameClicked = { deviceToRename = it },
                                 onStartWebShare = {
                                     webShareFilePicker(PeerDevice(id = "", name = "Web Share", ipAddress = ""))
                                 },
@@ -441,6 +443,63 @@ fun App(
                 }
             }
         }
+
+        // Global Rename Device Dialog (accessible from both Nearby and Trusted tabs)
+        deviceToRename?.let { device ->
+            var renameInput by remember(device) { mutableStateOf(device.customName ?: device.name) }
+            AlertDialog(
+                onDismissRequest = { deviceToRename = null },
+                containerColor = QuickPearColors.SurfaceDark,
+                title = {
+                    Text("Rename Trusted Device", color = QuickPearColors.WarmCream, fontWeight = FontWeight.Bold)
+                },
+                text = {
+                    Column {
+                        Text(
+                            text = "Set a custom alias for '${device.name}'. Leave empty to reset to original name.",
+                            fontSize = 12.sp,
+                            color = QuickPearColors.WarmGray
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = renameInput,
+                            onValueChange = { renameInput = it },
+                            singleLine = true,
+                            placeholder = { Text(device.name, color = QuickPearColors.SlateMuted) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = QuickPearColors.WarmCream,
+                                unfocusedTextColor = QuickPearColors.WarmCream,
+                                focusedBorderColor = QuickPearColors.PearGreen,
+                                unfocusedBorderColor = QuickPearColors.SlateIndigo
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            viewModel.renameTrustedDevice(device.id, renameInput.trim())
+                            deviceToRename = null
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = QuickPearColors.PearGreen)
+                    ) {
+                        Text("Save", color = Color.White)
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(
+                        onClick = { deviceToRename = null },
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, QuickPearColors.SlateIndigo),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = QuickPearColors.WarmCream)
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
     }
 }
 
@@ -515,10 +574,13 @@ fun NearbyDevicesScreen(
     onPairClicked: (PeerDevice) -> Unit,
     onSendClicked: (PeerDevice) -> Unit,
     onSendTextClicked: (PeerDevice) -> Unit,
+    onRenameClicked: (TrustedDevice) -> Unit,
     onStartWebShare: () -> Unit,
     onRemotePairClicked: () -> Unit
 ) {
     val trustedList = trustedDevices ?: emptyList()
+    val trustedOnlinePeers = devices.filter { peer -> trustedList.any { it.id == peer.id } }
+    val otherOnlinePeers = devices.filterNot { peer -> trustedList.any { it.id == peer.id } }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -561,28 +623,92 @@ fun NearbyDevicesScreen(
             )
         }
 
-        // Section Header
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Discovered Devices (${devices.size})",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = QuickPearColors.WarmCream
-                )
-                Text(
-                    text = "Auto-connected",
-                    fontSize = 11.sp,
-                    color = QuickPearColors.WarmGray
+        // ---------------------------------------------------------
+        // SECTION 1: TRUSTED DEVICES (ONLINE)
+        // ---------------------------------------------------------
+        if (trustedOnlinePeers.isNotEmpty()) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(QuickPearColors.PearGreen)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Trusted Devices (${trustedOnlinePeers.size})",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = QuickPearColors.WarmCream
+                        )
+                    }
+                    Text(
+                        text = "Instant Transfer",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = QuickPearColors.PearGreen
+                    )
+                }
+            }
+
+            items(trustedOnlinePeers) { peer ->
+                val trusted = trustedList.firstOrNull { it.id == peer.id }
+                DiscoveredDeviceCard(
+                    peer = peer,
+                    trustedDevice = trusted,
+                    isPairing = isPairing,
+                    onPair = { onPairClicked(peer) },
+                    onSend = { onSendClicked(peer) },
+                    onSendText = { onSendTextClicked(peer) },
+                    onRename = { trusted?.let { onRenameClicked(it) } }
                 )
             }
         }
 
-        // Empty state or device list
+        // ---------------------------------------------------------
+        // SECTION 2: OTHER DISCOVERED DEVICES
+        // ---------------------------------------------------------
+        if (otherOnlinePeers.isNotEmpty()) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = if (trustedOnlinePeers.isNotEmpty()) 10.dp else 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (trustedOnlinePeers.isNotEmpty()) "Other Discovered Devices (${otherOnlinePeers.size})" else "Discovered Devices (${otherOnlinePeers.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = QuickPearColors.WarmCream
+                    )
+                    Text(
+                        text = "Auto-connected",
+                        fontSize = 11.sp,
+                        color = QuickPearColors.WarmGray
+                    )
+                }
+            }
+
+            items(otherOnlinePeers) { peer ->
+                DiscoveredDeviceCard(
+                    peer = peer,
+                    trustedDevice = null,
+                    isPairing = isPairing,
+                    onPair = { onPairClicked(peer) },
+                    onSend = { onSendClicked(peer) },
+                    onSendText = { onSendTextClicked(peer) },
+                    onRename = {}
+                )
+            }
+        }
+
+        // Empty state when absolutely no devices are discovered
         if (devices.isEmpty()) {
             item {
                 Card(
@@ -619,18 +745,6 @@ fun NearbyDevicesScreen(
                     }
                 }
             }
-        } else {
-            items(devices) { peer ->
-                val isTrusted = trustedList.any { it.id == peer.id }
-                DiscoveredDeviceCard(
-                    peer = peer,
-                    isTrusted = isTrusted,
-                    isPairing = isPairing,
-                    onPair = { onPairClicked(peer) },
-                    onSend = { onSendClicked(peer) },
-                    onSendText = { onSendTextClicked(peer) }
-                )
-            }
         }
     }
 }
@@ -638,17 +752,28 @@ fun NearbyDevicesScreen(
 @Composable
 fun DiscoveredDeviceCard(
     peer: PeerDevice,
-    isTrusted: Boolean,
+    trustedDevice: TrustedDevice?,
     isPairing: Boolean,
     onPair: () -> Unit,
     onSend: () -> Unit,
-    onSendText: () -> Unit
+    onSendText: () -> Unit,
+    onRename: () -> Unit
 ) {
+    val isTrusted = trustedDevice != null
+    val customAlias = trustedDevice?.customName?.takeIf { it.isNotBlank() }
+    val primaryDisplayName = customAlias ?: peer.name
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = QuickPearColors.CardSurface),
-        border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.35f))
+        colors = CardDefaults.cardColors(
+            containerColor = if (isTrusted) QuickPearColors.CardSurface else QuickPearColors.CardSurface
+        ),
+        border = BorderStroke(
+            1.dp,
+            if (isTrusted) QuickPearColors.PearGreen.copy(alpha = 0.5f)
+            else QuickPearColors.SlateIndigo.copy(alpha = 0.35f)
+        )
     ) {
         Column(
             modifier = Modifier
@@ -663,13 +788,26 @@ fun DiscoveredDeviceCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(
-                        text = peer.name,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        color = QuickPearColors.WarmCream,
-                        modifier = Modifier.weight(1f)
-                    )
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = primaryDisplayName,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            color = QuickPearColors.WarmCream
+                        )
+                        if (customAlias != null) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "(${peer.name})",
+                                fontSize = 12.sp,
+                                color = QuickPearColors.WarmGray
+                            )
+                        }
+                    }
+
                     if (isTrusted) {
                         Box(
                             modifier = Modifier
@@ -738,6 +876,15 @@ fun DiscoveredDeviceCard(
                         modifier = Modifier.weight(1f)
                     ) {
                         Text("Text", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    OutlinedButton(
+                        onClick = onRename,
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, QuickPearColors.SlateIndigo.copy(alpha = 0.6f)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD6E2FF)),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Rename", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     }
                 } else {
                     OutlinedButton(
@@ -1021,12 +1168,21 @@ fun TrustedDeviceCard(
                     modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    val customAlias = device.customName?.takeIf { it.isNotBlank() }
                     Text(
-                        text = device.name,
+                        text = customAlias ?: device.name,
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp,
                         color = QuickPearColors.WarmCream
                     )
+                    if (customAlias != null) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "(${device.name})",
+                            fontSize = 12.sp,
+                            color = QuickPearColors.WarmGray
+                        )
+                    }
                     Spacer(modifier = Modifier.width(8.dp))
                     Box(
                         modifier = Modifier
@@ -1234,9 +1390,9 @@ fun SettingsScreen(
                     DiscoveryMode.entries.forEach { entry ->
                         val isSelected = mode == entry
                         val label = when (entry) {
-                            DiscoveryMode.ACTIVE -> "Active (3s)"
-                            DiscoveryMode.BACKGROUND -> "Background (20s)"
-                            DiscoveryMode.POWER_SAVER -> "Power Saver (60s)"
+                            DiscoveryMode.ACTIVE -> "Active (2s)"
+                            DiscoveryMode.BACKGROUND -> "Background (6s)"
+                            DiscoveryMode.POWER_SAVER -> "Power Saver (15s)"
                         }
                         Button(
                             onClick = { onModeChange(entry) },
