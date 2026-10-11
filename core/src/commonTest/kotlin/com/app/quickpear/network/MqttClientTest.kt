@@ -48,9 +48,11 @@ class MqttClientTest {
             val receivedMessage = CompletableDeferred<String>()
             val targetTopic = "quickpear/p/test_${System.currentTimeMillis()}"
 
-            // Client 2 subscribes to the presence wildcard topic used by SignalingClient
+            // Client 2 subscribes to the presence wildcard topic
             client2.subscribe("quickpear/p/+") { topic, bytes ->
-                receivedMessage.complete(bytes.decodeToString())
+                if (topic == targetTopic) {
+                    receivedMessage.complete(bytes.decodeToString())
+                }
             }
 
             kotlinx.coroutines.delay(1000)

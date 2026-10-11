@@ -91,7 +91,10 @@ data class CloudMessagePayload(
     val hotspotSsid: String = "",
     val hotspotPass: String = "",
     val hotspotPort: Int = 8888,
-    val hotspotHostIp: String = "192.168.43.1"
+    val hotspotHostIp: String = "192.168.43.1",
+    val relayHost: String = "",
+    val relayPort: Int = 0,
+    val relayToken: String = ""
 )
 
 /**
@@ -106,12 +109,14 @@ class SignalingClient(
     private val partFileManager: PartFileManager? = null,
     private val fileSystem: FileSystem = FileSystem.SYSTEM,
     private val localPort: Int = 8888,
+    val relayHost: String? = null,
+    val relayPort: Int = com.app.quickpear.relay.RelayProtocol.DEFAULT_RELAY_PORT,
     private val onCloudTextReceived: ((PeerIdentity, String) -> Unit)? = null,
     private val onProgressUpdate: ((TransferProgress?) -> Unit)? = null,
     private val onCloudFileOfferReceived: (suspend (senderName: String, fileCount: Int, totalBytes: Long) -> Boolean)? = null,
     private val json: Json = Json { ignoreUnknownKeys = true }
 ) {
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val scope = CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
     private var workerJob: Job? = null
 
     val mqttClient = MqttClient()
@@ -176,10 +181,17 @@ class SignalingClient(
                 handleIncomingCloudMessage(payloadBytes)
             }
 
-            // Subscribe to presence updates
-            mqttClient.subscribe("quickpear/p/+") { topic, payloadBytes ->
-                val senderHash = topic.removePrefix("quickpear/p/")
-                handleIncomingPresence(senderHash, payloadBytes)
+            // Selectively subscribe to presence updates only for trusted devices
+            scope.launch {
+                trustStore.devices.collect { trustedList ->
+                    for (trusted in trustedList) {
+                        val trustedHash = ChecksumUtil.calculateSha256(trusted.id.encodeToByteArray())
+                        mqttClient.subscribe("quickpear/p/$trustedHash") { topic, payloadBytes ->
+                            val senderHash = topic.removePrefix("quickpear/p/")
+                            handleIncomingPresence(senderHash, payloadBytes)
+                        }
+                    }
+                }
             }
 
             while (isActive) {
@@ -351,6 +363,21 @@ class SignalingClient(
                             status = "ACCEPTED"
                         )
                         mqttClient.publish("quickpear/msg/$senderHashed", json.encodeToString(CloudMessagePayload.serializer(), acceptMsg).encodeToByteArray())
+
+                        if (msg.relayHost.isNotBlank() && msg.relayToken.isNotBlank()) {
+                            scope.launch {
+                                try {
+                                    val tokenBytes = msg.relayToken.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                                    val relayClient = com.app.quickpear.relay.BlindRelayClient()
+                                    val conn = relayClient.connectAndPair(msg.relayHost, msg.relayPort, tokenBytes, com.app.quickpear.relay.BlindRelayClient.ROLE_RECEIVER)
+                                    val engine = com.app.quickpear.engine.TransferEngine(mgr, fileSystem)
+                                    engine.receiveFiles(conn) { true }
+                                    conn.close()
+                                } catch (_: Exception) {
+                                    // If blind relay fails, receiver remains ready for MQTT chunk fallback
+                                }
+                            }
+                        }
 
                         onProgressUpdate?.invoke(
                             TransferProgress(
@@ -557,13 +584,19 @@ class SignalingClient(
         val acceptDeferred = registerPendingResponse("accept:$sessionId")
         val cancelDeferred = registerPendingResponse("cancel:$sessionId")
 
+        val relayTokenBytes = kotlin.random.Random.nextBytes(com.app.quickpear.relay.RelayProtocol.TOKEN_LENGTH)
+        val relayTokenHex = if (!relayHost.isNullOrBlank()) relayTokenBytes.joinToString("") { "%02x".format(it) } else ""
+
         val offer = CloudMessagePayload(
             action = "FILE_OFFER",
             senderId = identity.deviceId,
             senderName = deviceNameProvider(),
             sessionId = sessionId,
             files = cloudFiles,
-            timestamp = System.currentTimeMillis()
+            timestamp = System.currentTimeMillis(),
+            relayHost = relayHost ?: "",
+            relayPort = relayPort,
+            relayToken = relayTokenHex
         )
         mqttClient.publish("quickpear/msg/$targetHashed", json.encodeToString(CloudMessagePayload.serializer(), offer).encodeToByteArray())
 
@@ -591,7 +624,32 @@ class SignalingClient(
             return@withContext false
         }
 
-        // 3. Send chunks for each file using a sliding window pipeline
+        // 3. Attempt high-speed binary transfer via Blind Relay if enabled and configured
+        val targetRelayHost = relayHost
+        if (!targetRelayHost.isNullOrBlank() && relayTokenHex.isNotBlank()) {
+            try {
+                val relayClient = com.app.quickpear.relay.BlindRelayClient()
+                val conn = withTimeoutOrNull(6000L) {
+                    relayClient.connectAndPair(targetRelayHost, relayPort, relayTokenBytes, com.app.quickpear.relay.BlindRelayClient.ROLE_SENDER)
+                }
+                if (conn != null) {
+                    val engine = com.app.quickpear.engine.TransferEngine(partFileManager ?: com.app.quickpear.io.PartFileManager(okio.FileSystem.SYSTEM_TEMPORARY_DIRECTORY), fileSystem)
+                    var relaySuccess = false
+                    try {
+                        engine.sendFiles(conn, sessionId, filesMap)
+                        relaySuccess = true
+                    } catch (_: Exception) {
+                    } finally {
+                        conn.close()
+                    }
+                    if (relaySuccess) return@withContext true
+                }
+            } catch (_: Exception) {
+                // Relay connection failed, fall through to MQTT chunk pipeline
+            }
+        }
+
+        // 4. Fallback: Send chunks for each file using a sliding window MQTT pipeline
         val chunker = FileChunker(fileSystem, chunkSizeBytes = chunkSizeBytes.toInt())
         for (cloudFile in cloudFiles) {
             val entry = filesMap.entries.firstOrNull { it.key.fileName == cloudFile.fileName } ?: continue

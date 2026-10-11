@@ -69,12 +69,22 @@ class PartFileManager(
     }
 
     /** Deletes any stale .part and .part.meta so the transfer restarts cleanly from chunk 0. */
-    fun resetPart(fileName: String) {
+    fun resetPart(fileName: String) = synchronized(metaLock) {
+        val safeName = sanitizeFileName(fileName)
+        activeBitmaps.remove(safeName)
+        activeMeta.remove(safeName)
+        dirtyCounters.remove(safeName)
         val partPath = getPartPath(fileName)
         val metaPath = getMetaPath(fileName)
         if (fileSystem.exists(partPath)) fileSystem.delete(partPath)
         if (fileSystem.exists(metaPath)) fileSystem.delete(metaPath)
     }
+
+    // In-memory cache for high-performance chunk tracking without per-chunk disk I/O thrashing
+    private val activeBitmaps = mutableMapOf<String, ChunkBitmap>()
+    private val activeMeta = mutableMapOf<String, PartMetaInfo>()
+    private val dirtyCounters = mutableMapOf<String, Int>()
+    private val metaLock = Any()
 
     /**
      * Reads or creates metadata sidecar info for a file.
@@ -84,23 +94,42 @@ class PartFileManager(
         fileName: String,
         totalSize: Long,
         sha256: String
-    ): PartMetaInfo {
-        val metaPath = getMetaPath(fileName)
+    ): PartMetaInfo = synchronized(metaLock) {
+        val safeName = sanitizeFileName(fileName)
+        activeMeta[safeName]?.let { return it }
+
+        val metaPath = getMetaPath(safeName)
+        var meta: PartMetaInfo? = null
         if (fileSystem.exists(metaPath)) {
             try {
                 val content = fileSystem.read(metaPath) { readUtf8() }
-                return json.decodeFromString(PartMetaInfo.serializer(), content)
+                meta = json.decodeFromString(PartMetaInfo.serializer(), content)
             } catch (_: Exception) {
                 // Return fresh if meta corrupt
             }
         }
-        val meta = PartMetaInfo(fileId, sanitizeFileName(fileName), totalSize, sha256)
-        saveMeta(meta)
+        if (meta == null) {
+            meta = PartMetaInfo(fileId, safeName, totalSize, sha256)
+            saveMetaInternal(meta)
+        }
+
+        activeMeta[safeName] = meta
+        val bitmap = ChunkBitmap()
+        for (chunkId in meta.receivedChunkIds) {
+            bitmap.set(chunkId)
+        }
+        activeBitmaps[safeName] = bitmap
+        dirtyCounters[safeName] = 0
         return meta
     }
 
-    fun saveMeta(metaInfo: PartMetaInfo) {
-        val metaPath = getMetaPath(metaInfo.fileName)
+    fun saveMeta(metaInfo: PartMetaInfo) = synchronized(metaLock) {
+        saveMetaInternal(metaInfo)
+    }
+
+    private fun saveMetaInternal(metaInfo: PartMetaInfo) {
+        val safeName = sanitizeFileName(metaInfo.fileName)
+        val metaPath = getMetaPath(safeName)
         metaPath.parent?.let { if (!fileSystem.exists(it)) fileSystem.createDirectories(it) }
         val content = json.encodeToString(PartMetaInfo.serializer(), metaInfo)
         fileSystem.write(metaPath) {
@@ -108,25 +137,93 @@ class PartFileManager(
         }
     }
 
-    fun markChunkReceived(fileName: String, chunkId: Long) {
-        val metaPath = getMetaPath(fileName)
-        if (!fileSystem.exists(metaPath)) return
-        val content = fileSystem.read(metaPath) { readUtf8() }
-        val current = json.decodeFromString(PartMetaInfo.serializer(), content)
-        val updated = current.copy(receivedChunkIds = current.receivedChunkIds + chunkId)
-        saveMeta(updated)
+    /**
+     * High-speed O(1) chunk tracking. Sets the bit in the in-memory [ChunkBitmap]
+     * and periodically flushes to disk (every 100 chunks) to eliminate disk I/O thrashing.
+     */
+    fun markChunkReceived(fileName: String, chunkId: Long) = synchronized(metaLock) {
+        val safeName = sanitizeFileName(fileName)
+        var bitmap = activeBitmaps[safeName]
+        var meta = activeMeta[safeName]
+
+        if (bitmap == null || meta == null) {
+            meta = getOrCreateMeta(0, safeName, 0L, "")
+            bitmap = activeBitmaps[safeName] ?: ChunkBitmap().also { activeBitmaps[safeName] = it }
+        }
+
+        bitmap.set(chunkId)
+        val dirty = (dirtyCounters[safeName] ?: 0) + 1
+        dirtyCounters[safeName] = dirty
+
+        // Batch disk write every 100 chunks to save battery and eliminate I/O lag
+        if (dirty >= 100) {
+            flushMetaInternal(safeName)
+        }
+    }
+
+    /**
+     * Flushes in-memory metadata and received chunks to disk.
+     */
+    fun flushMeta(fileName: String) = synchronized(metaLock) {
+        flushMetaInternal(sanitizeFileName(fileName))
+    }
+
+    private fun flushMetaInternal(safeName: String) {
+        val meta = activeMeta[safeName] ?: return
+        val bitmap = activeBitmaps[safeName] ?: return
+
+        // Populate received chunk IDs from bitmap
+        val count = bitmap.cardinality()
+        val chunkSet = HashSet<Long>(count.coerceAtMost(50_000L).toInt())
+        // Scan up to largest possible chunk
+        var idx = 0L
+        while (chunkSet.size < count) {
+            if (bitmap.isSet(idx)) {
+                chunkSet.add(idx)
+            }
+            idx++
+        }
+
+        val updated = meta.copy(receivedChunkIds = chunkSet)
+        activeMeta[safeName] = updated
+        saveMetaInternal(updated)
+        dirtyCounters[safeName] = 0
+    }
+
+    /**
+     * Returns the in-memory [ChunkBitmap] for [fileName] if available.
+     */
+    fun getChunkBitmap(fileName: String): ChunkBitmap? = synchronized(metaLock) {
+        return activeBitmaps[sanitizeFileName(fileName)]
     }
 
     /**
      * Determines starting chunk index for auto-resume. Returns 0 if none.
+     * Uses [ChunkBitmap.firstMissingChunk] for accurate contiguous resume.
      */
-    fun getStartChunkOffset(fileName: String): Long {
-        val metaPath = getMetaPath(fileName)
+    fun getStartChunkOffset(fileName: String): Long = synchronized(metaLock) {
+        val safeName = sanitizeFileName(fileName)
+        val bitmap = activeBitmaps[safeName]
+        if (bitmap != null) {
+            return bitmap.firstMissingChunk(Long.MAX_VALUE)
+        }
+
+        val metaPath = getMetaPath(safeName)
         if (!fileSystem.exists(metaPath)) return 0L
         return try {
             val content = fileSystem.read(metaPath) { readUtf8() }
             val meta = json.decodeFromString(PartMetaInfo.serializer(), content)
-            if (meta.receivedChunkIds.isEmpty()) 0L else (meta.receivedChunkIds.maxOrNull() ?: -1L) + 1L
+            if (meta.receivedChunkIds.isEmpty()) {
+                0L
+            } else {
+                val freshBitmap = ChunkBitmap()
+                for (id in meta.receivedChunkIds) {
+                    freshBitmap.set(id)
+                }
+                activeBitmaps[safeName] = freshBitmap
+                activeMeta[safeName] = meta
+                freshBitmap.firstMissingChunk(Long.MAX_VALUE)
+            }
         } catch (_: Exception) {
             0L
         }
@@ -151,6 +248,11 @@ class PartFileManager(
     fun finalizeTransfer(fileName: String, relativePath: String = ""): Path {
         val partPath = getPartPath(fileName)
         val safeName = sanitizeFileName(fileName)
+        synchronized(metaLock) {
+            activeBitmaps.remove(safeName)
+            activeMeta.remove(safeName)
+            dirtyCounters.remove(safeName)
+        }
         val segments = sanitizeRelativePath(relativePath)
         var targetDir = downloadDirectory
         for (seg in segments) {

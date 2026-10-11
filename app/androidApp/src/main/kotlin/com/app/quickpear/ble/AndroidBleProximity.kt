@@ -156,10 +156,12 @@ class AndroidBleProximity(
         try {
             if (multicastLock == null) {
                 multicastLock = wifiManager?.createMulticastLock("QuickPearMulticastLock")?.apply {
-                    setReferenceCounted(true)
+                    setReferenceCounted(false)
                 }
             }
-            multicastLock?.acquire()
+            if (multicastLock?.isHeld != true) {
+                multicastLock?.acquire()
+            }
         } catch (_: Exception) {
         }
     }

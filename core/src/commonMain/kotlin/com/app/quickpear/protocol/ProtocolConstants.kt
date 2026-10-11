@@ -23,6 +23,8 @@ object ProtocolConstants {
     // Identity handshake
     const val PROTOCOL_VERSION = 1
     const val MAX_HANDSHAKE_PAYLOAD = 8192L
+    const val MAX_METADATA_REQ_PAYLOAD = 1_048_576L // 1 MB
+    const val MAX_CHUNK_DATA_PAYLOAD = 4_194_304L // 4 MB (default chunk is 2 MB)
 
     // Metadata Response Codes
     const val METADATA_RESP_ACCEPTED: Byte = 0x00

@@ -31,7 +31,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okio.FileSystem
 import okio.Path
@@ -129,7 +131,9 @@ class QuickPearNode(
 
     private val socketClient = KtorSocketClient()
     private val socketServer = KtorSocketServer(port = port, host = "0.0.0.0")
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val connectionSemaphore = Semaphore(permits = 16)
+    private val coroutineExceptionHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, _ -> }
+    private val scope = CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob() + coroutineExceptionHandler)
     private val mutex = Mutex()
 
     private var serverJob: Job? = null
@@ -161,12 +165,14 @@ class QuickPearNode(
                     socketServer.acceptConnections().collect { connection ->
                         if (!isActive) return@collect
                         scope.launch {
-                            try {
-                                incomingHandler.handle(connection)
-                            } catch (_: Exception) {
-                            } finally {
-                                connection.close()
-                                p2pLinkNegotiator.disconnectHotspot()
+                            connectionSemaphore.withPermit {
+                                try {
+                                    incomingHandler.handle(connection)
+                                } catch (_: Exception) {
+                                } finally {
+                                    connection.close()
+                                    p2pLinkNegotiator.disconnectHotspot()
+                                }
                             }
                         }
                     }
@@ -194,51 +200,66 @@ class QuickPearNode(
 
         // Collect from LAN discovery
         scope.launch {
-            proximityEngine.lanDiscovery.onlineDevices.collect { lanPeers ->
-                _onlinePeers.update { current ->
-                    val updated = current.toMutableMap()
-                    for (p in lanPeers) {
-                        updated[p.id] = p
+            try {
+                proximityEngine.lanDiscovery.onlineDevices.collect { lanPeers ->
+                    _onlinePeers.update { current ->
+                        val updated = current.toMutableMap()
+                        for (p in lanPeers) {
+                            updated[p.id] = p
+                        }
+                        _onlineDevices.value = updated.values.toList()
+                        updated
                     }
-                    _onlineDevices.value = updated.values.toList()
-                    updated
                 }
-            }
+            } catch (_: Exception) {}
         }
 
         // Collect from any native proximity scanners (BLE, etc.)
         scope.launch {
-            proximityEngine.startScanning().collect { scannedPeer ->
-                _onlinePeers.update { current ->
-                    val updated = current + (scannedPeer.id to scannedPeer)
-                    _onlineDevices.value = updated.values.toList()
-                    updated
+            try {
+                proximityEngine.startScanning().collect { scannedPeer ->
+                    _onlinePeers.update { current ->
+                        val updated = current + (scannedPeer.id to scannedPeer)
+                        _onlineDevices.value = updated.values.toList()
+                        updated
+                    }
                 }
-            }
+            } catch (_: Exception) {}
         }
 
         // Collect from Cloud Hybrid Signaling
         signalingClient.start()
         scope.launch {
-            signalingClient.onlinePeers.collect { cloudPeers ->
-                _onlinePeers.update { current ->
-                    val updated = current.toMutableMap()
-                    for (p in cloudPeers) {
-                        if (!updated.containsKey(p.id)) {
-                            updated[p.id] = p
+            try {
+                signalingClient.onlinePeers.collect { cloudPeers ->
+                    _onlinePeers.update { current ->
+                        val updated = current.toMutableMap()
+                        for (p in cloudPeers) {
+                            if (!updated.containsKey(p.id)) {
+                                updated[p.id] = p
+                            }
                         }
+                        _onlineDevices.value = updated.values.toList()
+                        updated
                     }
-                    _onlineDevices.value = updated.values.toList()
-                    updated
                 }
-            }
+            } catch (_: Exception) {}
         }
 
-        // Periodically probe trusted devices via TCP ping
+        // Periodically probe trusted devices via TCP ping with adaptive intervals
         scope.launch {
             while (isActive) {
-                probeTrustedDevices()
-                kotlinx.coroutines.delay(10_000L)
+                val delayTime = when (proximityEngine.lanDiscovery.mode.value) {
+                    DiscoveryMode.ACTIVE -> 10_000L
+                    DiscoveryMode.BACKGROUND -> 45_000L
+                    DiscoveryMode.POWER_SAVER -> 90_000L
+                }
+                if (trustStore.devices.value.isNotEmpty()) {
+                    try {
+                        probeTrustedDevices()
+                    } catch (_: Exception) {}
+                }
+                kotlinx.coroutines.delay(delayTime)
             }
         }
 

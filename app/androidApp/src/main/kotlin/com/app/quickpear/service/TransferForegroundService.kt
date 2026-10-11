@@ -23,9 +23,12 @@ import com.app.quickpear.domain.DeviceType
 import com.app.quickpear.domain.TransferStatus
 import com.app.quickpear.node.QuickPearNode
 import com.app.quickpear.notification.NotificationApprovalHandler
+import android.content.pm.ServiceInfo
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import okio.Path.Companion.toPath
@@ -35,7 +38,8 @@ class TransferForegroundService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
-    private val scope = CoroutineScope(Dispatchers.Main)
+    private val exceptionHandler = CoroutineExceptionHandler { _, _ -> }
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob() + exceptionHandler)
     private var progressJob: Job? = null
 
     companion object {
@@ -66,7 +70,6 @@ class TransferForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        acquireLocks()
         initNode()
     }
 
@@ -118,10 +121,13 @@ class TransferForegroundService : Service() {
         progressJob = scope.launch {
             node.transferProgress.collectLatest { progress ->
                 if (progress != null && progress.status == TransferStatus.TRANSFERRING) {
+                    acquireTransferLocks()
                     updateTransferNotification(progress)
                 } else if (progress != null && progress.status == TransferStatus.COMPLETED) {
+                    releaseTransferLocks()
                     updateCompletedNotification(progress.fileName)
                 } else {
+                    releaseTransferLocks()
                     updateNotification("Quick Pear is ready to receive files")
                 }
             }
@@ -129,9 +135,12 @@ class TransferForegroundService : Service() {
 
         scope.launch {
             node.onlineDevices.collectLatest { devices ->
-                com.app.quickpear.util.ShareShortcutPublisher.updateDynamicShortcuts(
-                    applicationContext, devices, node.trustStore
-                )
+                try {
+                    com.app.quickpear.util.ShareShortcutPublisher.updateDynamicShortcuts(
+                        applicationContext, devices, node.trustStore
+                    )
+                } catch (_: Throwable) {
+                }
             }
         }
     }
@@ -145,38 +154,52 @@ class TransferForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CANCEL_TRANSFER) {
             activeNode?.cancelTransfer()
+            releaseTransferLocks()
             updateNotification("Transfer cancelled")
             return START_STICKY
         }
         val statusMessage = intent?.getStringExtra("status") ?: "Quick Pear is ready to receive files"
         val notification = createNotification(statusMessage)
-        startForeground(NOTIF_ID, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        } else {
+            startForeground(NOTIF_ID, notification)
+        }
         return START_STICKY
     }
 
-    private fun acquireLocks() {
-        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "QuickPear::TransferWakeLock").apply {
-            acquire(60 * 60 * 1000L) // 1 hour max safety
-        }
+    private fun acquireTransferLocks() {
+        try {
+            if (wakeLock?.isHeld != true) {
+                val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+                wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "QuickPear::TransferWakeLock").apply {
+                    acquire(10 * 60 * 1000L) // 10 min safety timeout per active transfer
+                }
+            }
+        } catch (_: Exception) {}
 
-        val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
-        wifiLock = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "QuickPear::WifiLock")
-        } else {
-            @Suppress("DEPRECATION")
-            wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "QuickPear::WifiLock")
-        }.apply {
-            acquire()
-        }
+        try {
+            if (wifiLock?.isHeld != true) {
+                val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+                wifiLock = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "QuickPear::WifiLock")
+                } else {
+                    @Suppress("DEPRECATION")
+                    wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "QuickPear::WifiLock")
+                }.apply {
+                    acquire()
+                }
+            }
+        } catch (_: Exception) {}
     }
 
-    private fun releaseLocks() {
+    private fun releaseTransferLocks() {
         try {
             if (wakeLock?.isHeld == true) wakeLock?.release()
+        } catch (_: Exception) {}
+        try {
             if (wifiLock?.isHeld == true) wifiLock?.release()
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 
     private fun createNotificationChannel() {
@@ -293,7 +316,7 @@ class TransferForegroundService : Service() {
             activeNode?.stop()
             activeNode = null
         }
-        releaseLocks()
+        releaseTransferLocks()
         super.onDestroy()
     }
 

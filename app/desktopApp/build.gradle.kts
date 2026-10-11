@@ -23,7 +23,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe, TargetFormat.Deb, TargetFormat.Dmg, TargetFormat.Pkg)
             packageName = "Quick Pear"
-            packageVersion = "1.1.1"
+            packageVersion = "2.0.0"
             description = "Quick Pear Local Wireless File Transfer"
             copyright = "© 2025 Quick Pear Team. All rights reserved."
             vendor = "Quick Pear"

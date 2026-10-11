@@ -45,7 +45,7 @@ class LanBroadcastDiscovery(
     private val nowMillis: () -> Long = { System.currentTimeMillis() }
 ) : DeviceScanner, DeviceAdvertiser, AdaptiveDiscovery {
 
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val scope = CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
     private val lifecycleMutex = Mutex()
 
     private val _discoveredDevices = MutableSharedFlow<PeerDevice>(extraBufferCapacity = 64)
@@ -101,8 +101,8 @@ class LanBroadcastDiscovery(
     private fun startListening(datagramSocket: BoundDatagramSocket) {
         listenJob?.cancel()
         listenJob = scope.launch {
-            try {
-                while (isActive) {
+            while (isActive) {
+                try {
                     val datagram = datagramSocket.receive()
                     val bytes = datagram.packet.readBytes()
                     val text = bytes.decodeToString()
@@ -135,9 +135,10 @@ class LanBroadcastDiscovery(
                             // Ignore corrupted or malformed beacon packets
                         }
                     }
+                } catch (_: Exception) {
+                    if (!isActive) break
+                    delay(500L)
                 }
-            } catch (_: Exception) {
-                // Socket closed or interrupted
             }
         }
 

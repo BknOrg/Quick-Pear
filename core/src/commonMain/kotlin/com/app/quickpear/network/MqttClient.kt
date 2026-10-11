@@ -35,7 +35,7 @@ class MqttClient(
     val hosts: List<String> = listOf("broker.emqx.io", "broker.hivemq.com"),
     val port: Int = 1883
 ) {
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val scope = CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
     private val writeMutex = Mutex()
     private var connectionJob: Job? = null
     private var readJob: Job? = null
@@ -315,7 +315,14 @@ class MqttClient(
                 throw IllegalStateException("Malformed Remaining Length in MQTT packet")
             }
         } while ((encodedByte and 0x80) != 0)
+        if (value > MAX_MQTT_PACKET_LENGTH) {
+            throw IllegalStateException("MQTT packet length $value exceeds max allowed limit $MAX_MQTT_PACKET_LENGTH")
+        }
         return value
+    }
+
+    companion object {
+        const val MAX_MQTT_PACKET_LENGTH = 4 * 1024 * 1024 // 4 MB safety limit
     }
 
     private fun writeMqttLength(buf: Buffer, length: Int) {

@@ -115,7 +115,7 @@ class ShareActivity : ComponentActivity() {
 
         val appContext = applicationContext
         // Dispatch to background scope so finishing activity doesn't cancel the transfer
-        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob()).launch {
             try {
                 val files = UriFileResolver.resolveUrisToFiles(appContext, uris)
                 node.sendFiles(target, files)

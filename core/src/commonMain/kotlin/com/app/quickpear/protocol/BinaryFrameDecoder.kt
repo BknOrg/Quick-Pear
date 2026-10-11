@@ -26,6 +26,9 @@ class BinaryFrameDecoder(private val json: Json = Json { ignoreUnknownKeys = tru
      * Decodes 0x03 METADATA_REQ payload.
      */
     fun readMetadataRequest(source: BufferedSource, payloadLength: Long): MetadataRequest {
+        require(payloadLength in 0..ProtocolConstants.MAX_METADATA_REQ_PAYLOAD) {
+            "Metadata request payload length $payloadLength exceeds limit ${ProtocolConstants.MAX_METADATA_REQ_PAYLOAD}"
+        }
         val jsonBytes = source.readByteArray(payloadLength)
         val jsonString = jsonBytes.decodeToString()
         return json.decodeFromString(MetadataRequest.serializer(), jsonString)
@@ -48,6 +51,9 @@ class BinaryFrameDecoder(private val json: Json = Json { ignoreUnknownKeys = tru
         require(marker == ProtocolConstants.CHUNK_MARKER_PAYLOAD) { "Invalid chunk marker: $marker" }
         val chunkId = source.readLong()
         val chunkLength = source.readInt()
+        require(chunkLength in 0..ProtocolConstants.MAX_CHUNK_DATA_PAYLOAD) {
+            "Chunk data length $chunkLength exceeds limit ${ProtocolConstants.MAX_CHUNK_DATA_PAYLOAD}"
+        }
         val checksum = source.readLong()
         val rawBytes = source.readByteArray(chunkLength.toLong())
 

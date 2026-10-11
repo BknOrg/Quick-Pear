@@ -127,4 +127,24 @@ class ProtocolFramingTest {
         assertEquals(fileId, decodedFileId)
         assertEquals(status, decodedStatus)
     }
+
+    @Test
+    fun testMetadataRequestRejectsOversizedPayload() {
+        val buffer = Buffer()
+        kotlin.test.assertFailsWith<IllegalArgumentException> {
+            decoder.readMetadataRequest(buffer, ProtocolConstants.MAX_METADATA_REQ_PAYLOAD + 1)
+        }
+    }
+
+    @Test
+    fun testChunkDataRejectsOversizedPayload() {
+        val buffer = Buffer()
+        buffer.writeByte(ProtocolConstants.CHUNK_MARKER_PAYLOAD.toInt())
+        buffer.writeLong(1L)
+        buffer.writeInt((ProtocolConstants.MAX_CHUNK_DATA_PAYLOAD + 1).toInt())
+        buffer.writeLong(0L)
+        kotlin.test.assertFailsWith<IllegalArgumentException> {
+            decoder.readChunkData(buffer, ProtocolConstants.MAX_CHUNK_DATA_PAYLOAD + 1)
+        }
+    }
 }

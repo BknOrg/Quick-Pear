@@ -18,27 +18,31 @@ object ShareShortcutPublisher {
         onlineDevices: List<PeerDevice>,
         trustStore: TrustStore
     ) {
-        val trustedOnline = onlineDevices.filter { trustStore.isTrusted(it.id) }.take(4)
+        try {
+            val trustedOnline = onlineDevices.filter { trustStore.isTrusted(it.id) }.take(4)
 
-        val shortcuts = trustedOnline.map { device ->
-            val trusted = trustStore.get(device.id)
-            val displayName = trusted?.displayName() ?: device.name
+            val shortcuts = trustedOnline.map { device ->
+                val trusted = trustStore.get(device.id)
+                val displayName = trusted?.displayName() ?: device.name
 
-            val intent = Intent(context, com.app.quickpear.ShareActivity::class.java).apply {
-                action = Intent.ACTION_SEND
-                putExtra(EXTRA_TARGET_PEER_ID, device.id)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                val intent = Intent(context, com.app.quickpear.ShareActivity::class.java).apply {
+                    action = Intent.ACTION_SEND
+                    putExtra(EXTRA_TARGET_PEER_ID, device.id)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                }
+
+                ShortcutInfoCompat.Builder(context, device.id)
+                    .setShortLabel(displayName)
+                    .setLongLabel("Send files to $displayName")
+                    .setIcon(IconCompat.createWithResource(context, android.R.drawable.stat_sys_upload))
+                    .setIntent(intent)
+                    .setCategories(setOf(CATEGORY_SHARE_TARGET))
+                    .build()
             }
 
-            ShortcutInfoCompat.Builder(context, device.id)
-                .setShortLabel(displayName)
-                .setLongLabel("Send files to $displayName")
-                .setIcon(IconCompat.createWithResource(context, android.R.drawable.stat_sys_upload))
-                .setIntent(intent)
-                .setCategories(setOf(CATEGORY_SHARE_TARGET))
-                .build()
+            ShortcutManagerCompat.setDynamicShortcuts(context, shortcuts)
+        } catch (_: Throwable) {
+            // Safely ignore shortcut limitations on OEM or restricted profiles
         }
-
-        ShortcutManagerCompat.addDynamicShortcuts(context, shortcuts)
     }
 }
