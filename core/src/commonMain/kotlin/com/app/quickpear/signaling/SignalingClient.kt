@@ -94,7 +94,8 @@ data class CloudMessagePayload(
     val hotspotHostIp: String = "192.168.43.1",
     val relayHost: String = "",
     val relayPort: Int = 0,
-    val relayToken: String = ""
+    val relayToken: String = "",
+    val missingChunks: List<Long> = emptyList()
 )
 
 /**
@@ -265,7 +266,13 @@ class SignalingClient(
                     "FILE_ACCEPT" -> completePendingResponse("accept:${msg.sessionId}", msg)
                     "FILE_CANCEL" -> completePendingResponse("cancel:${msg.sessionId}", msg)
                     "CHUNK_ACK" -> completePendingResponse("ack:${msg.sessionId}:${msg.fileId}:${msg.chunkIndex}", msg)
-                    "FILE_COMPLETE" -> completePendingResponse("complete:${msg.sessionId}:${msg.fileId}", msg)
+                    "FILE_COMPLETE" -> {
+                        completePendingResponse("complete:${msg.sessionId}:${msg.fileId}", msg)
+                        completePendingResponse("finalize:${msg.sessionId}:${msg.fileId}", msg)
+                    }
+                    "FILE_MISSING_CHUNKS" -> {
+                        completePendingResponse("finalize:${msg.sessionId}:${msg.fileId}", msg)
+                    }
                     "HOTSPOT_ACCEPT", "HOTSPOT_UNREACHABLE" -> completePendingResponse("hotspot:${msg.sessionId}", msg)
                 }
             }
@@ -465,6 +472,28 @@ class SignalingClient(
                     val fileMeta = session.files.firstOrNull { it.fileId == msg.fileId } ?: return
                     val senderHashed = ChecksumUtil.calculateSha256(msg.senderId.encodeToByteArray())
 
+                    val bitmap = mgr.getChunkBitmap(fileMeta.fileName)
+                    val missing = if (fileMeta.fileSizeBytes == 0L) {
+                        emptyList()
+                    } else {
+                        bitmap?.missingChunks(fileMeta.totalChunks) ?: (0L until fileMeta.totalChunks).toList()
+                    }
+
+                    if (missing.isNotEmpty()) {
+                        val missingMsg = CloudMessagePayload(
+                            action = "FILE_MISSING_CHUNKS",
+                            senderId = identity.deviceId,
+                            senderName = deviceNameProvider(),
+                            sessionId = msg.sessionId,
+                            fileId = msg.fileId,
+                            missingChunks = missing
+                        )
+                        scope.launch {
+                            mqttClient.publish("quickpear/msg/$senderHashed", json.encodeToString(CloudMessagePayload.serializer(), missingMsg).encodeToByteArray())
+                        }
+                        return
+                    }
+
                     mgr.finalizeTransfer(fileMeta.fileName, fileMeta.relativePath)
 
                     val isLast = session.files.lastOrNull()?.fileId == msg.fileId
@@ -649,29 +678,24 @@ class SignalingClient(
             }
         }
 
-        // 4. Fallback: Send chunks for each file using a sliding window MQTT pipeline
+        // 4. Fallback: Send chunks for each file using Burst Pipeline (< 10 MB) or Sliding Window (>= 10 MB)
+        val BURST_THRESHOLD_BYTES = 10 * 1024 * 1024L
         val chunker = FileChunker(fileSystem, chunkSizeBytes = chunkSizeBytes.toInt())
         for (cloudFile in cloudFiles) {
             val entry = filesMap.entries.firstOrNull { it.key.fileName == cloudFile.fileName } ?: continue
             val sourcePath = entry.value
+            val isBurstMode = cloudFile.fileSizeBytes < BURST_THRESHOLD_BYTES
 
-            val windowSemaphore = Semaphore(permits = 5)
-            val chunkJobs = mutableListOf<Job>()
-            var fileFailed = false
-            var failureReason = ""
+            if (isBurstMode) {
+                // High-speed burst streaming without per-chunk round-trip ACK stalls
+                val burstSemaphore = Semaphore(permits = 8)
+                val burstJobs = mutableListOf<Job>()
 
-            chunker.readChunksFlow(sourcePath).collect { chunkData ->
-                if (fileFailed) return@collect
-
-                windowSemaphore.acquire()
-                val job = scope.launch {
-                    try {
-                        val base64Data = chunkData.payloadBytes.toByteString().base64()
-                        var chunkAcked = false
-
-                        for (attempt in 1..3) {
-                            val ackDeferred = registerPendingResponse("ack:$sessionId:${cloudFile.fileId}:${chunkData.header.chunkId}")
-
+                chunker.readChunksFlow(sourcePath).collect { chunkData ->
+                    burstSemaphore.acquire()
+                    val job = scope.launch {
+                        try {
+                            val base64Data = chunkData.payloadBytes.toByteString().base64()
                             val chunkMsg = CloudMessagePayload(
                                 action = "FILE_CHUNK",
                                 senderId = identity.deviceId,
@@ -686,75 +710,197 @@ class SignalingClient(
                             )
                             mqttClient.publish("quickpear/msg/$targetHashed", json.encodeToString(CloudMessagePayload.serializer(), chunkMsg).encodeToByteArray())
 
-                            val ack = withTimeoutOrNull(15_000L) { ackDeferred.await() }
-                            if (ack != null && ack.status == "OK") {
-                                chunkAcked = true
-                                break
+                            progressMutex.withLock {
+                                totalBytesSent += chunkData.payloadBytes.size
+                                val elapsed = ((System.currentTimeMillis() - startTime) / 1000.0).coerceAtLeast(0.001)
+                                val speed = (totalBytesSent / elapsed).toLong()
+
+                                onProgressUpdate?.invoke(
+                                    TransferProgress(
+                                        fileId = cloudFile.fileId,
+                                        fileName = cloudFile.fileName,
+                                        bytesTransferred = totalBytesSent,
+                                        totalBytes = totalBytes,
+                                        transferSpeedBytesPerSec = speed,
+                                        currentChunkIndex = chunkData.header.chunkId + 1,
+                                        totalChunks = cloudFile.totalChunks,
+                                        status = TransferStatus.TRANSFERRING
+                                    )
+                                )
+                            }
+                        } finally {
+                            burstSemaphore.release()
+                        }
+                    }
+                    burstJobs.add(job)
+                    delay(3L) // Minimal pacing to avoid overflowing socket buffers
+                }
+                burstJobs.joinAll()
+
+                // Finalize and verify with receiver; re-send missing chunks if any dropped
+                var fileFinalized = false
+                var burstError = ""
+                for (attempt in 1..4) {
+                    val finDeferred = registerPendingResponse("finalize:$sessionId:${cloudFile.fileId}")
+                    val finMsg = CloudMessagePayload(
+                        action = "FILE_FINALIZE",
+                        senderId = identity.deviceId,
+                        senderName = deviceNameProvider(),
+                        sessionId = sessionId,
+                        fileId = cloudFile.fileId
+                    )
+                    mqttClient.publish("quickpear/msg/$targetHashed", json.encodeToString(CloudMessagePayload.serializer(), finMsg).encodeToByteArray())
+
+                    val finReply = withTimeoutOrNull(12_000L) { finDeferred.await() }
+                    if (finReply?.action == "FILE_COMPLETE") {
+                        fileFinalized = true
+                        break
+                    } else if (finReply?.action == "FILE_MISSING_CHUNKS" && finReply.missingChunks.isNotEmpty()) {
+                        val missingSet = finReply.missingChunks.toSet()
+                        chunker.readChunksFlow(sourcePath).collect { chunkData ->
+                            if (missingSet.contains(chunkData.header.chunkId)) {
+                                val base64Data = chunkData.payloadBytes.toByteString().base64()
+                                val chunkMsg = CloudMessagePayload(
+                                    action = "FILE_CHUNK",
+                                    senderId = identity.deviceId,
+                                    senderName = deviceNameProvider(),
+                                    sessionId = sessionId,
+                                    fileId = cloudFile.fileId,
+                                    chunkIndex = chunkData.header.chunkId,
+                                    totalChunks = cloudFile.totalChunks,
+                                    chunkData = base64Data,
+                                    checksum = chunkData.header.checksum,
+                                    timestamp = System.currentTimeMillis()
+                                )
+                                mqttClient.publish("quickpear/msg/$targetHashed", json.encodeToString(CloudMessagePayload.serializer(), chunkMsg).encodeToByteArray())
+                                delay(3L)
                             }
                         }
-
-                        if (!chunkAcked) {
-                            fileFailed = true
-                            failureReason = "Gagal mengirim chunk ${chunkData.header.chunkId}"
-                            return@launch
-                        }
-
-                        progressMutex.withLock {
-                            totalBytesSent += chunkData.payloadBytes.size
-                            val elapsed = ((System.currentTimeMillis() - startTime) / 1000.0).coerceAtLeast(0.001)
-                            val speed = (totalBytesSent / elapsed).toLong()
-
-                            onProgressUpdate?.invoke(
-                                TransferProgress(
-                                    fileId = cloudFile.fileId,
-                                    fileName = cloudFile.fileName,
-                                    bytesTransferred = totalBytesSent,
-                                    totalBytes = totalBytes,
-                                    transferSpeedBytesPerSec = speed,
-                                    currentChunkIndex = chunkData.header.chunkId + 1,
-                                    totalChunks = cloudFile.totalChunks,
-                                    status = TransferStatus.TRANSFERRING
-                                )
-                            )
-                        }
-                    } finally {
-                        windowSemaphore.release()
+                    } else if (attempt == 4) {
+                        burstError = "Gagal memfinalisasi transfer file ${cloudFile.fileName} setelah 4 percobaan"
                     }
                 }
-                chunkJobs.add(job)
-            }
 
-            chunkJobs.joinAll()
-
-            if (fileFailed) {
-                onProgressUpdate?.invoke(
-                    TransferProgress(
-                        fileId = cloudFile.fileId,
-                        fileName = cloudFile.fileName,
-                        bytesTransferred = totalBytesSent,
-                        totalBytes = totalBytes,
-                        transferSpeedBytesPerSec = 0,
-                        currentChunkIndex = 0,
-                        totalChunks = cloudFile.totalChunks,
-                        status = TransferStatus.FAILED,
-                        errorMessage = failureReason
+                if (!fileFinalized) {
+                    val reason = burstError.ifEmpty { "Gagal menyelesaikan transfer file ${cloudFile.fileName}" }
+                    onProgressUpdate?.invoke(
+                        TransferProgress(
+                            fileId = cloudFile.fileId,
+                            fileName = cloudFile.fileName,
+                            bytesTransferred = totalBytesSent,
+                            totalBytes = totalBytes,
+                            transferSpeedBytesPerSec = 0,
+                            currentChunkIndex = 0,
+                            totalChunks = cloudFile.totalChunks,
+                            status = TransferStatus.FAILED,
+                            errorMessage = reason
+                        )
                     )
+                    throw IllegalStateException(reason)
+                }
+            } else {
+                // Sliding window with per-chunk ACK for large files (>= 10 MB)
+                val windowSemaphore = Semaphore(permits = 5)
+                val chunkJobs = mutableListOf<Job>()
+                var fileFailed = false
+                var failureReason = ""
+
+                chunker.readChunksFlow(sourcePath).collect { chunkData ->
+                    if (fileFailed) return@collect
+
+                    windowSemaphore.acquire()
+                    val job = scope.launch {
+                        try {
+                            val base64Data = chunkData.payloadBytes.toByteString().base64()
+                            var chunkAcked = false
+
+                            for (attempt in 1..3) {
+                                val ackDeferred = registerPendingResponse("ack:$sessionId:${cloudFile.fileId}:${chunkData.header.chunkId}")
+
+                                val chunkMsg = CloudMessagePayload(
+                                    action = "FILE_CHUNK",
+                                    senderId = identity.deviceId,
+                                    senderName = deviceNameProvider(),
+                                    sessionId = sessionId,
+                                    fileId = cloudFile.fileId,
+                                    chunkIndex = chunkData.header.chunkId,
+                                    totalChunks = cloudFile.totalChunks,
+                                    chunkData = base64Data,
+                                    checksum = chunkData.header.checksum,
+                                    timestamp = System.currentTimeMillis()
+                                )
+                                mqttClient.publish("quickpear/msg/$targetHashed", json.encodeToString(CloudMessagePayload.serializer(), chunkMsg).encodeToByteArray())
+
+                                val ack = withTimeoutOrNull(15_000L) { ackDeferred.await() }
+                                if (ack != null && ack.status == "OK") {
+                                    chunkAcked = true
+                                    break
+                                }
+                            }
+
+                            if (!chunkAcked) {
+                                fileFailed = true
+                                failureReason = "Gagal mengirim chunk ${chunkData.header.chunkId}"
+                                return@launch
+                            }
+
+                            progressMutex.withLock {
+                                totalBytesSent += chunkData.payloadBytes.size
+                                val elapsed = ((System.currentTimeMillis() - startTime) / 1000.0).coerceAtLeast(0.001)
+                                val speed = (totalBytesSent / elapsed).toLong()
+
+                                onProgressUpdate?.invoke(
+                                    TransferProgress(
+                                        fileId = cloudFile.fileId,
+                                        fileName = cloudFile.fileName,
+                                        bytesTransferred = totalBytesSent,
+                                        totalBytes = totalBytes,
+                                        transferSpeedBytesPerSec = speed,
+                                        currentChunkIndex = chunkData.header.chunkId + 1,
+                                        totalChunks = cloudFile.totalChunks,
+                                        status = TransferStatus.TRANSFERRING
+                                    )
+                                )
+                            }
+                        } finally {
+                            windowSemaphore.release()
+                        }
+                    }
+                    chunkJobs.add(job)
+                }
+
+                chunkJobs.joinAll()
+
+                if (fileFailed) {
+                    onProgressUpdate?.invoke(
+                        TransferProgress(
+                            fileId = cloudFile.fileId,
+                            fileName = cloudFile.fileName,
+                            bytesTransferred = totalBytesSent,
+                            totalBytes = totalBytes,
+                            transferSpeedBytesPerSec = 0,
+                            currentChunkIndex = 0,
+                            totalChunks = cloudFile.totalChunks,
+                            status = TransferStatus.FAILED,
+                            errorMessage = failureReason
+                        )
+                    )
+                    throw IllegalStateException(failureReason)
+                }
+
+                // Send FILE_FINALIZE
+                val compDeferred = registerPendingResponse("complete:$sessionId:${cloudFile.fileId}")
+                val finMsg = CloudMessagePayload(
+                    action = "FILE_FINALIZE",
+                    senderId = identity.deviceId,
+                    senderName = deviceNameProvider(),
+                    sessionId = sessionId,
+                    fileId = cloudFile.fileId
                 )
-                throw IllegalStateException(failureReason)
+                mqttClient.publish("quickpear/msg/$targetHashed", json.encodeToString(CloudMessagePayload.serializer(), finMsg).encodeToByteArray())
+
+                withTimeoutOrNull(15_000L) { compDeferred.await() }
             }
-
-            // Send FILE_FINALIZE
-            val compDeferred = registerPendingResponse("complete:$sessionId:${cloudFile.fileId}")
-            val finMsg = CloudMessagePayload(
-                action = "FILE_FINALIZE",
-                senderId = identity.deviceId,
-                senderName = deviceNameProvider(),
-                sessionId = sessionId,
-                fileId = cloudFile.fileId
-            )
-            mqttClient.publish("quickpear/msg/$targetHashed", json.encodeToString(CloudMessagePayload.serializer(), finMsg).encodeToByteArray())
-
-            withTimeoutOrNull(15_000L) { compDeferred.await() }
         }
 
         onProgressUpdate?.invoke(

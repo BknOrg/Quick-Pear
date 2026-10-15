@@ -110,6 +110,21 @@ class ChunkBitmap(initialCapacityChunks: Long = 64L) {
     }
 
     /**
+     * Returns a list of all chunk indices from 0 until [totalChunks] that have NOT been received.
+     */
+    @Synchronized
+    fun missingChunks(totalChunks: Long): List<Long> {
+        if (totalChunks <= 0L) return emptyList()
+        val missing = mutableListOf<Long>()
+        for (i in 0L until totalChunks) {
+            if (!isSet(i)) {
+                missing.add(i)
+            }
+        }
+        return missing
+    }
+
+    /**
      * Returns a copy of the raw byte buffer trimmed to [totalChunks] length.
      */
     @Synchronized

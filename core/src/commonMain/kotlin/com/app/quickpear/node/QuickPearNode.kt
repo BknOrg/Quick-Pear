@@ -377,10 +377,10 @@ class QuickPearNode(
         activeSendingJob = coroutineContext[kotlinx.coroutines.Job]
         try {
             if (target.connectionType == com.app.quickpear.domain.ConnectionType.CLOUD_P2P) {
-                // Tier 1: Direct TCP Probe (if IP is reachable on LAN / public IP)
+                // Tier 1: Fast Direct TCP Probe (if IP is reachable on LAN / public IP)
                 if (target.ipAddress.isNotBlank() && target.ipAddress != "cloud-relay") {
                     try {
-                        kotlinx.coroutines.withTimeout(2000L) {
+                        kotlinx.coroutines.withTimeout(400L) {
                             client.sendFiles(
                                 host = target.ipAddress,
                                 port = target.port,
@@ -408,7 +408,7 @@ class QuickPearNode(
                                     hostIp = hotspot.hostIp,
                                     port = hotspot.port,
                                     sessionId = sessionId,
-                                    timeoutMillis = 5000L
+                                    timeoutMillis = 1000L
                                 )
                                 if (accepted && receiverLocalIp.isNotBlank()) {
                                     client.sendFiles(
@@ -429,7 +429,7 @@ class QuickPearNode(
                     }
                 }
 
-                // Tier 3: Fallback to Cloud Relay (256 KB Chunks with Sliding Window)
+                // Tier 3: Cloud Relay (Burst Pipeline < 10 MB / Sliding Window >= 10 MB)
                 signalingClient.sendFiles(target, files, sessionId)
                 return@coroutineScope
             }
