@@ -12,4 +12,7 @@ internal expect object Crypto {
     fun sign(privateKey: ByteArray, data: ByteArray): ByteArray
     fun verify(publicKey: ByteArray, data: ByteArray, signature: ByteArray): Boolean
     fun randomBytes(size: Int): ByteArray
+    fun agree(privateKey: ByteArray, publicKey: ByteArray): ByteArray
+    fun hmac(key: ByteArray, data: ByteArray): ByteArray
+    fun crypt(encrypt: Boolean, key: ByteArray, nonce: ByteArray, aad: ByteArray, data: ByteArray): ByteArray
 }

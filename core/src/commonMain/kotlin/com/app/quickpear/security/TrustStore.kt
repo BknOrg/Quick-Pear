@@ -45,7 +45,7 @@ class TrustStore(
     fun get(deviceId: String): TrustedDevice? = _devices.value.firstOrNull { it.id == deviceId }
 
     /** Adds (or refreshes the name of) a trusted device. Preserves customName if set. Rejects ids that do not match the key. */
-    fun add(
+    @Synchronized fun add(
         deviceId: String,
         name: String,
         publicKey: ByteArray,
@@ -71,7 +71,7 @@ class TrustStore(
         save()
     }
 
-    fun updateLastKnownIp(deviceId: String, ipAddress: String, port: Int = 8888) {
+    @Synchronized fun updateLastKnownIp(deviceId: String, ipAddress: String, port: Int = 8888) {
         _devices.update { list ->
             list.map {
                 if (it.id == deviceId) it.copy(lastKnownIp = ipAddress, lastKnownPort = port) else it
@@ -80,7 +80,7 @@ class TrustStore(
         save()
     }
 
-    fun rename(deviceId: String, newName: String) {
+    @Synchronized fun rename(deviceId: String, newName: String) {
         val trimmed = newName.trim()
         _devices.update { list ->
             list.map {
@@ -108,12 +108,12 @@ class TrustStore(
         }
     }
 
-    fun remove(deviceId: String) {
+    @Synchronized fun remove(deviceId: String) {
         _devices.update { list -> list.filterNot { it.id == deviceId } }
         save()
     }
 
-    fun clear() {
+    @Synchronized fun clear() {
         _devices.update { emptyList() }
         save()
     }
@@ -121,7 +121,13 @@ class TrustStore(
     private fun load(): List<TrustedDevice> {
         if (!fileSystem.exists(file)) return emptyList()
         return try {
-            json.decodeFromString(serializer, fileSystem.read(file) { readUtf8() })
+            json.decodeFromString(serializer, fileSystem.read(file) { readUtf8() }).also { entries ->
+                require(entries.map { it.id }.distinct().size == entries.size)
+                entries.forEach { entry ->
+                    val key = entry.publicKey.fromBase64() ?: error("Invalid trusted key")
+                    require(DeviceIdentity.idFromPublicKey(key) == entry.id)
+                }
+            }
         } catch (_: Exception) {
             emptyList()
         }

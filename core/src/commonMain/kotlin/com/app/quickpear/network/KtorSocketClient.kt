@@ -18,7 +18,7 @@ class KtorSocketClient {
             val socket = withTimeout(timeoutMillis) {
                 aSocket(selector).tcp().connect(host, port)
             }
-            SocketConnection(socket)
+            SocketConnection(socket) { selector.close() }
         } catch (e: Exception) {
             try { selector.close() } catch (_: Exception) {}
             throw e

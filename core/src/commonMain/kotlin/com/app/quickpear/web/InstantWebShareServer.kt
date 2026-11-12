@@ -15,6 +15,17 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import com.app.quickpear.security.Crypto
+import com.app.quickpear.security.SecurityLog
+import okio.ByteString.Companion.toByteString
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -26,134 +37,110 @@ import okio.buffer
  * Ephemeral HTTP server for sharing files directly with web browsers (e.g. Safari on iOS,
  * Chrome on guest PCs) without requiring any client application to be installed.
  */
+data class WebShareStatus(val active: Boolean = false, val expiresAtMillis: Long? = null)
+
 class InstantWebShareServer(
     private val fileSystem: FileSystem = FileSystem.SYSTEM,
-    private val onFilesReceived: ((List<Path>) -> Unit)? = null
+    private val onFilesReceived: ((List<Path>) -> Unit)? = null,
+    private val lifetimeMillis: Long = 15 * 60_000L,
+    private val requestTimeoutMillis: Long = 15_000,
+    private val now: () -> Long = { System.currentTimeMillis() }
 ) {
     private var selectorManager: SelectorManager? = null
     private var serverSocket: ServerSocket? = null
     private var serverJob: Job? = null
-    private val scope = CoroutineScope(Dispatchers.IO)
-
+    private var expiryJob: Job? = null
+    private val scope = CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+    private val lifecycle = Mutex()
+    private val permits = Semaphore(8)
+    private val sockets = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
+    @Volatile private var token: String? = null
+    internal val activeConnectionCount: Int get() = sockets.size
+    private val state = MutableStateFlow(WebShareStatus())
+    val status: StateFlow<WebShareStatus> = state.asStateFlow()
     var currentPort: Int = 8890
         private set
-
     var sharedFiles: List<Path> = emptyList()
         private set
-
-    val isRunning: Boolean
-        get() = serverSocket != null && serverJob?.isActive == true
-
-    suspend fun start(
-        files: List<Path>,
-        requestedPort: Int = 8890
-    ): Int = withContext(Dispatchers.IO) {
-        stop()
-        sharedFiles = files
-
-        var port = requestedPort
-        var bound = false
+    val isRunning: Boolean get() = state.value.active && now() < (state.value.expiresAtMillis ?: 0)
+    fun shareUrl(host: String): String {
+        check(isRunning)
+        return "http://$host:$currentPort/${token ?: error("Share stopped")}/"
+    }
+    suspend fun start(files: List<Path>, requestedPort: Int = 8890): Int = withContext(Dispatchers.IO) { lifecycle.withLock {
+        stopInternal()
+        require(files.isNotEmpty() && files.size <= 1000 && requestedPort in 1..65535)
+        val snapshot = files.toList()
+        snapshot.forEach { require(fileSystem.metadata(it).isRegularFile) }
         val selector = SelectorManager(Dispatchers.IO)
         selectorManager = selector
-
-        while (!bound && port < requestedPort + 20) {
-            try {
-                serverSocket = aSocket(selector).tcp().bind("0.0.0.0", port)
-                bound = true
-                currentPort = port
-            } catch (_: Exception) {
-                port++
-            }
+        for (port in requestedPort..minOf(requestedPort + 19, 65535)) {
+            try { serverSocket = aSocket(selector).tcp().bind("0.0.0.0", port); currentPort = port; break }
+            catch (_: Exception) { }
         }
-
-        if (!bound || serverSocket == null) {
-            selector.close()
-            selectorManager = null
-            throw IllegalStateException("Failed to bind InstantWebShareServer on ports $requestedPort..${requestedPort + 20}")
-        }
-
+        val server = serverSocket ?: run { selector.close(); selectorManager = null; error("No Web Share port available") }
+        val sessionToken = Crypto.randomBytes(32).toByteString().hex()
+        val expiry = now() + lifetimeMillis
+        token = sessionToken; sharedFiles = snapshot
+        state.value = WebShareStatus(true, expiry)
         serverJob = scope.launch {
-            val server = serverSocket ?: return@launch
             while (isActive) {
-                try {
-                    val socket = server.accept()
-                    launch {
-                        handleClient(socket)
-                    }
-                } catch (_: Exception) {
-                    if (!isActive) break
+                val socket = try { server.accept() } catch (_: Exception) { break }
+                if (!permits.tryAcquire()) { socket.close(); continue }
+                sockets.add(socket)
+                launch {
+                    try { handleClient(socket, snapshot, sessionToken, expiry) }
+                    finally { sockets.remove(socket); socket.close(); permits.release() }
                 }
             }
         }
-
+        expiryJob = scope.launch { delay(lifetimeMillis); stop() }
         currentPort
+    } }
+    suspend fun stop() = withContext(Dispatchers.IO) { lifecycle.withLock { stopInternal() } }
+    private fun stopInternal() {
+        token = null; state.value = WebShareStatus()
+        expiryJob?.cancel(); expiryJob = null
+        serverJob?.cancel(); serverJob = null
+        sockets.forEach { it.close() }; sockets.clear()
+        serverSocket?.close(); serverSocket = null
+        selectorManager?.close(); selectorManager = null
+        sharedFiles = emptyList()
     }
-
-    suspend fun stop() = withContext(Dispatchers.IO) {
+    private suspend fun handleClient(socket: Socket, files: List<Path>, sessionToken: String, expiry: Long) {
         try {
-            serverJob?.cancel()
-            serverJob = null
-            serverSocket?.close()
-            serverSocket = null
-            selectorManager?.close()
-            selectorManager = null
-            sharedFiles = emptyList()
-        } catch (_: Exception) {
-        }
+            val read = socket.openReadChannel()
+            val write = socket.openWriteChannel(autoFlush = true)
+            val request = withTimeout(requestTimeoutMillis) {
+                var remaining = 16 * 1024
+                suspend fun line(): String {
+                    val value = read.readUTF8Line(remaining) ?: error("Incomplete request")
+                    remaining -= value.encodeToByteArray().size + 2
+                    require(remaining >= 0) { "Headers too large" }
+                    return value
+                }
+                val first = line().split(' ')
+                require(first.size == 3 && first[0] == "GET")
+                while (line().isNotEmpty()) { }
+                first[1].substringBefore('?')
+            }
+            val prefix = "/$sessionToken/"
+            if (token != sessionToken || now() >= expiry || !request.startsWith(prefix)) {
+                withTimeout(requestTimeoutMillis) { serveNotFound(write) }; return
+            }
+            val path = request.removePrefix(prefix)
+            if (path.isEmpty()) withTimeout(requestTimeoutMillis) { serveIndexHtml(write, files, sessionToken) }
+            else if (path.startsWith("download/")) {
+                val index = path.removePrefix("download/").toIntOrNull()
+                if (index != null && index in files.indices) serveFileDownload(write, files[index])
+                else withTimeout(requestTimeoutMillis) { serveNotFound(write) }
+            } else withTimeout(requestTimeoutMillis) { serveNotFound(write) }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) { SecurityLog.event("web_request_timeout")
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+          catch (_: Exception) { SecurityLog.event("web_request_rejected") }
     }
 
-    private suspend fun handleClient(socket: Socket) {
-        try {
-            val readChannel = socket.openReadChannel()
-            val writeChannel = socket.openWriteChannel(autoFlush = true)
-
-            val requestLine = readChannel.readUTF8Line() ?: return
-            val parts = requestLine.split(" ")
-            if (parts.size < 2) return
-
-            val method = parts[0].uppercase()
-            val uri = parts[1]
-
-            // Read headers
-            val headers = mutableMapOf<String, String>()
-            while (true) {
-                val line = readChannel.readUTF8Line() ?: break
-                if (line.isEmpty()) break
-                val colonIdx = line.indexOf(':')
-                if (colonIdx > 0) {
-                    val k = line.substring(0, colonIdx).trim().lowercase()
-                    val v = line.substring(colonIdx + 1).trim()
-                    headers[k] = v
-                }
-            }
-
-            when {
-                method == "GET" && (uri == "/" || uri.startsWith("/?")) -> {
-                    serveIndexHtml(writeChannel)
-                }
-                method == "GET" && uri.startsWith("/download/") -> {
-                    val indexStr = uri.removePrefix("/download/").substringBefore("?")
-                    val index = indexStr.toIntOrNull()
-                    if (index != null && index in sharedFiles.indices) {
-                        serveFileDownload(writeChannel, sharedFiles[index])
-                    } else {
-                        serveNotFound(writeChannel)
-                    }
-                }
-                else -> {
-                    serveNotFound(writeChannel)
-                }
-            }
-        } catch (_: Exception) {
-        } finally {
-            try {
-                socket.close()
-            } catch (_: Exception) {
-            }
-        }
-    }
-
-    private suspend fun serveIndexHtml(writeChannel: ByteWriteChannel) {
+    private suspend fun serveIndexHtml(writeChannel: ByteWriteChannel, sharedFiles: List<Path>, sessionToken: String) {
         val fileItemsHtml = if (sharedFiles.isEmpty()) {
             "<p style='color: #64748b; font-style: italic;'>No files are currently shared.</p>"
         } else {
@@ -167,7 +154,7 @@ class InstantWebShareServer(
                         <span class="file-name">${escapeHtml(path.name)}</span>
                         <span class="file-size">$sizeStr</span>
                     </div>
-                    <a class="btn-download" href="/download/$idx" download="${escapeHtml(path.name)}">Download</a>
+                    <a class="btn-download" href="/$sessionToken/download/$idx" download="${escapeHtml(path.name)}">Download</a>
                 </div>
                 """.trimIndent()
             }.joinToString("\n")
@@ -240,23 +227,23 @@ class InstantWebShareServer(
         val headers = "HTTP/1.1 200 OK\r\n" +
                 "Content-Type: text/html; charset=utf-8\r\n" +
                 "Content-Length: ${bytes.size}\r\n" +
-                "Connection: close\r\n\r\n"
-        writeChannel.writeStringUtf8(headers)
+                "Cache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n"
+        withTimeout(requestTimeoutMillis) { writeChannel.writeStringUtf8(headers) }
         writeChannel.writeFully(bytes)
     }
 
     private suspend fun serveFileDownload(writeChannel: ByteWriteChannel, path: Path) {
         val meta = fileSystem.metadataOrNull(path)
         val size = meta?.size ?: 0L
-        val fileName = path.name
+        val fileName = path.name.map { if (it.code < 32 || it == '"' || it == '\\' || it.code > 126) '_' else it }.joinToString("")
 
         val headers = "HTTP/1.1 200 OK\r\n" +
                 "Content-Type: application/octet-stream\r\n" +
                 "Content-Disposition: attachment; filename=\"$fileName\"\r\n" +
                 "Content-Length: $size\r\n" +
-                "Connection: close\r\n\r\n"
+                "Cache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n"
 
-        writeChannel.writeStringUtf8(headers)
+        withTimeout(requestTimeoutMillis) { writeChannel.writeStringUtf8(headers) }
 
         // Stream file contents
         fileSystem.source(path).buffer().use { source ->
@@ -264,7 +251,7 @@ class InstantWebShareServer(
             while (true) {
                 val read = source.read(buf)
                 if (read <= 0) break
-                writeChannel.writeFully(buf, 0, read)
+                withTimeout(requestTimeoutMillis) { writeChannel.writeFully(buf, 0, read) }
             }
         }
     }
@@ -274,7 +261,7 @@ class InstantWebShareServer(
         val response = "HTTP/1.1 404 Not Found\r\n" +
                 "Content-Type: text/plain; charset=utf-8\r\n" +
                 "Content-Length: ${body.length}\r\n" +
-                "Connection: close\r\n\r\n" + body
+                "Cache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n" + body
         writeChannel.writeStringUtf8(response)
     }
 

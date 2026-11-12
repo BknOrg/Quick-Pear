@@ -51,7 +51,7 @@ class BlindRelayClient {
             throw e
         }
 
-        val connection = SocketConnection(socket)
+        val connection = SocketConnection(socket) { selector.close() }
         val readChannel = connection.readChannel
         val writeChannel = connection.writeChannel
 

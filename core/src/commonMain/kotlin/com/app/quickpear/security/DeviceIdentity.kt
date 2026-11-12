@@ -48,17 +48,23 @@ class DeviceIdentity internal constructor(
         fun loadOrCreate(directory: Path, fileSystem: FileSystem = FileSystem.SYSTEM): DeviceIdentity {
             val file = directory / FILE_NAME
             if (fileSystem.exists(file)) {
-                try {
+                val candidate = try {
                     val stored = json.decodeFromString(Stored.serializer(), fileSystem.read(file) { readUtf8() })
-                    val pub = stored.publicKey.decodeBase64()?.toByteArray()
-                    val priv = stored.privateKey.decodeBase64()?.toByteArray()
-                    if (pub != null && priv != null) return DeviceIdentity(pub, priv)
-                } catch (_: Exception) {
-                    // fall through to quarantine
+                    val pub = stored.publicKey.decodeBase64()?.toByteArray() ?: error("Invalid public key")
+                    val priv = stored.privateKey.decodeBase64()?.toByteArray() ?: error("Invalid private key")
+                    DeviceIdentity(pub, priv).also { identity ->
+                        val challenge = Crypto.randomBytes(32)
+                        require(verify(pub, challenge, identity.sign(challenge))) { "Identity key pair mismatch" }
+                    }
+                } catch (_: Exception) { SecurityLog.event("identity_corrupt"); null }
+                if (candidate != null) {
+                    if (fileSystem === FileSystem.SYSTEM) protectIdentityFile(file.toString())
+                    return candidate
                 }
                 val corrupt = directory / "$FILE_NAME.corrupt"
                 if (fileSystem.exists(corrupt)) fileSystem.delete(corrupt)
                 fileSystem.atomicMove(file, corrupt)
+                if (fileSystem === FileSystem.SYSTEM) protectIdentityFile(corrupt.toString())
             }
 
             val identity = generate()
@@ -67,7 +73,12 @@ class DeviceIdentity internal constructor(
                 publicKey = identity.publicKey.toByteString().base64(),
                 privateKey = identity.privateKey.toByteString().base64()
             )
-            fileSystem.write(file) { writeUtf8(json.encodeToString(Stored.serializer(), stored)) }
+            val tmp = directory / "$FILE_NAME.tmp"
+            fileSystem.write(tmp) { }
+            if (fileSystem === FileSystem.SYSTEM) protectIdentityFile(tmp.toString())
+            fileSystem.write(tmp) { writeUtf8(json.encodeToString(Stored.serializer(), stored)) }
+            fileSystem.atomicMove(tmp, file)
+            if (fileSystem === FileSystem.SYSTEM) protectIdentityFile(file.toString())
             return identity
         }
     }
@@ -81,3 +92,5 @@ internal fun concatBytes(vararg parts: ByteArray): ByteArray {
     for (p in parts) { p.copyInto(out, offset); offset += p.size }
     return out
 }
+
+internal expect fun protectIdentityFile(path: String)

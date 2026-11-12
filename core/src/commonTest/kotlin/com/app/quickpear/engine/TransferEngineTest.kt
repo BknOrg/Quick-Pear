@@ -62,6 +62,7 @@ class TransferEngineTest {
                 val rx = async {
                     val conn = server.acceptConnections().first()
                     try {
+                        com.app.quickpear.security.Handshake.respond(conn, com.app.quickpear.security.DeviceIdentity.generate(), "Receiver")
                         receiver.receiveFiles(conn) { approve }
                     } finally {
                         conn.close()
@@ -70,6 +71,7 @@ class TransferEngineTest {
                 val tx = async {
                     val conn = KtorSocketClient().connect("127.0.0.1", port)
                     try {
+                        com.app.quickpear.security.Handshake.initiate(conn, com.app.quickpear.security.DeviceIdentity.generate(), "Sender", com.app.quickpear.security.SessionPurpose.TRANSFER)
                         sender.sendFiles(conn, "test-session", senderFiles)
                     } finally {
                         conn.close()
@@ -179,6 +181,7 @@ class TransferEngineTest {
                 val rx = async {
                     val conn = server.acceptConnections().first()
                     try {
+                        com.app.quickpear.security.Handshake.respond(conn, com.app.quickpear.security.DeviceIdentity.generate(), "Receiver")
                         receiver.receiveFiles(conn) { true }
                     } catch (_: Exception) {
                     } finally {
@@ -188,6 +191,7 @@ class TransferEngineTest {
                 val tx = async {
                     val conn = KtorSocketClient().connect("127.0.0.1", port)
                     try {
+                        com.app.quickpear.security.Handshake.initiate(conn, com.app.quickpear.security.DeviceIdentity.generate(), "Sender", com.app.quickpear.security.SessionPurpose.TRANSFER)
                         sender.sendFiles(conn, "test-cancel-session", mapOf(meta to path))
                     } catch (_: Exception) {
                     } finally {

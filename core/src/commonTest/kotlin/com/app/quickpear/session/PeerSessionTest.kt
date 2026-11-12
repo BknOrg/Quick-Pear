@@ -230,9 +230,15 @@ class PeerSessionTest {
                 val hello = HelloMessage(
                     version = ProtocolConstants.PROTOCOL_VERSION, name = "evil",
                     publicKey = attacker.publicKey.toBase64(),
-                    nonce = ByteArray(32) { 1 }.toBase64(), purpose = "TRANSFER"
+                    nonce = ByteArray(32) { 1 }.toBase64(), purpose = "TRANSFER",
+                    ephemeral = com.app.quickpear.security.Crypto.generateKeyPair().publicKey.toBase64()
                 )
-                conn.sendFrame(ProtocolConstants.MSG_HANDSHAKE_REQ, json.encodeToString(HelloMessage.serializer(), hello).encodeToByteArray())
+                val reveal = json.encodeToString(HelloMessage.serializer(), hello).encodeToByteArray()
+                val commit = com.app.quickpear.security.HandshakeCommit(2, com.app.quickpear.io.ChecksumUtil.calculateSha256(reveal))
+                conn.sendFrame(ProtocolConstants.MSG_HANDSHAKE_REQ, json.encodeToString(com.app.quickpear.security.HandshakeCommit.serializer(), commit).encodeToByteArray())
+                val commitmentHeader = conn.readHeader()
+                conn.readFramePayload(commitmentHeader.payloadLength, 8192)
+                conn.sendFrame(ProtocolConstants.MSG_HANDSHAKE_REVEAL, reveal)
                 val header = conn.readHeader()
                 conn.readFramePayload(header.payloadLength, 8192)
                 val forged = victim.publicKey.toBase64() // not a valid signature at all

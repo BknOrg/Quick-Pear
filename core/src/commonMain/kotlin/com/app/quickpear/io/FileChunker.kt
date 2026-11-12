@@ -21,6 +21,7 @@ class FileChunker(
         filePath: Path,
         startChunkIndex: Long = 0L
     ): Flow<ChunkData> = flow {
+        require(chunkSizeBytes in 1..4_194_304 && startChunkIndex >= 0 && startChunkIndex <= Long.MAX_VALUE / chunkSizeBytes)
         fileSystem.openReadOnly(filePath).use { fileHandle ->
             val fileSize = fileHandle.size()
             val startByteOffset = startChunkIndex * chunkSizeBytes
@@ -31,14 +32,12 @@ class FileChunker(
 
             while (currentByteOffset < fileSize) {
                 val bytesToRead = (fileSize - currentByteOffset).coerceAtMost(chunkSizeBytes.toLong()).toInt()
-                val bytesRead = fileHandle.read(
-                    fileOffset = currentByteOffset,
-                    array = buffer,
-                    arrayOffset = 0,
-                    byteCount = bytesToRead
-                )
-
-                if (bytesRead <= 0) break
+                var bytesRead = 0
+                while (bytesRead < bytesToRead) {
+                    val count = fileHandle.read(currentByteOffset + bytesRead, buffer, bytesRead, bytesToRead - bytesRead)
+                    check(count > 0) { "Source file changed during transfer" }
+                    bytesRead += count
+                }
 
                 val payloadBytes = if (bytesRead == chunkSizeBytes) {
                     buffer.copyOf()

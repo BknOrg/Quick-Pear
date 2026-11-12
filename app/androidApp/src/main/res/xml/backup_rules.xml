@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude domain="file" path="identity.json" />
+    <exclude domain="file" path="identity.json.tmp" />
+    <exclude domain="file" path="identity.json.corrupt" />
+</full-backup-content>

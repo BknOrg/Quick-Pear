@@ -55,6 +55,7 @@ class BinaryFrameDecoder(private val json: Json = Json { ignoreUnknownKeys = tru
             "Chunk data length $chunkLength exceeds limit ${ProtocolConstants.MAX_CHUNK_DATA_PAYLOAD}"
         }
         val checksum = source.readLong()
+        require(chunkId >= 0 && payloadLength == chunkLength.toLong() + 21) { "Invalid chunk framing" }
         val rawBytes = source.readByteArray(chunkLength.toLong())
 
         val chunkHeader = ChunkHeader(

@@ -1,0 +1,31 @@
+name: Checks
+on:
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - name: Install Android target
+        run: sdkmanager "platforms;android-37"
+      - name: Tests and target builds
+        run: ./gradlew.bat :core:jvmTest :app:shared:jvmTest :server:test :app:androidApp:assembleDebug :app:desktopApp:classes --console=plain
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            core/build/reports/tests/
+            app/shared/build/reports/tests/
+            server/build/reports/tests/

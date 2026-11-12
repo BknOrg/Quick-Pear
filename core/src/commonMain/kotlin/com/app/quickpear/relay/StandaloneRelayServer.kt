@@ -1,180 +1,118 @@
 package com.app.quickpear.relay
 
 import io.ktor.network.selector.SelectorManager
-import io.ktor.network.sockets.ServerSocket
-import io.ktor.network.sockets.Socket
-import io.ktor.network.sockets.aSocket
-import io.ktor.network.sockets.isClosed
-import io.ktor.network.sockets.openReadChannel
-import io.ktor.network.sockets.openWriteChannel
-import io.ktor.utils.io.ByteReadChannel
-import io.ktor.utils.io.ByteWriteChannel
-import io.ktor.utils.io.copyTo
-import io.ktor.utils.io.readFully
-import io.ktor.utils.io.readInt
-import io.ktor.utils.io.writeFully
-import io.ktor.utils.io.writeInt
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.IO
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
+import io.ktor.network.sockets.*
+import io.ktor.utils.io.*
+import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 
-/**
- * Lightweight, zero-knowledge blind relay server.
- * Connects paired sender and receiver clients by matching their 16-byte session token,
- * then blindly pipes raw binary data between them at line speed with 0% Base64 overhead.
- */
-class StandaloneRelayServer(
-    private val port: Int = RelayProtocol.DEFAULT_RELAY_PORT,
-    private val host: String = "0.0.0.0"
-) {
-    private var selectorManager: SelectorManager? = null
-    private var serverSocket: ServerSocket? = null
+/** Bounded relay. Application traffic is opaque AEAD records, authenticated end to end. */
+class StandaloneRelayServer(private val port: Int = RelayProtocol.DEFAULT_RELAY_PORT,
+    private val host: String = "0.0.0.0", private val pairingTimeoutMillis: Long = 30_000,
+    private val maxWaitingSessions: Int = 128) {
+    private var selector: SelectorManager? = null
+    private var server: ServerSocket? = null
     private var scope: CoroutineScope? = null
-
-    private data class PeerSlot(
-        val socket: Socket,
-        val readChannel: ByteReadChannel,
-        val writeChannel: ByteWriteChannel,
-        val role: Byte
-    )
-
-    private data class RelaySession(
-        val tokenHex: String,
-        var peer1: PeerSlot? = null,
-        var peer2: PeerSlot? = null,
-        val pairedDeferred: CompletableDeferred<Unit> = CompletableDeferred()
-    )
-
-    private val sessions = mutableMapOf<String, RelaySession>()
-    private val sessionsMutex = Mutex()
-
-    suspend fun start() = withContext(Dispatchers.IO) {
-        val selector = SelectorManager(Dispatchers.IO)
-        selectorManager = selector
-        val server = aSocket(selector).tcp().bind(host, port)
-        serverSocket = server
-        val serverScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-        scope = serverScope
-
-        serverScope.launch {
-            while (isActive && !server.isClosed) {
-                try {
-                    val clientSocket = server.accept()
-                    launch { handleClient(clientSocket) }
-                } catch (e: Exception) {
-                    if (!isActive || server.isClosed) break
-                }
+    private val mutex = Mutex()
+    private val capacity = Semaphore(maxWaitingSessions * 2)
+    private class Slot(val socket: Socket, val read: ByteReadChannel, val write: ByteWriteChannel, val role: Byte)
+    private class Session(val first: Slot, var second: Slot? = null,
+        val paired: CompletableDeferred<Unit> = CompletableDeferred(), val done: CompletableDeferred<Unit> = CompletableDeferred())
+    private val sessions = mutableMapOf<String, Session>()
+    internal suspend fun pendingSessionCount(): Int = mutex.withLock { sessions.size }
+    suspend fun start() {
+        check(server == null)
+        val manager = SelectorManager(Dispatchers.IO)
+        selector = manager
+        val listener = aSocket(manager).tcp().bind(host, port)
+        server = listener
+        val workers = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        scope = workers
+        workers.launch {
+            while (isActive) {
+                val socket = try { listener.accept() } catch (_: Exception) { break }
+                if (!capacity.tryAcquire()) { socket.close(); continue }
+                launch { try { handle(socket) } finally { capacity.release() } }
             }
         }
     }
-
-    private suspend fun handleClient(socket: Socket) = withContext(Dispatchers.IO) {
-        val readChannel = socket.openReadChannel()
-        val writeChannel = socket.openWriteChannel(autoFlush = true)
-
+    private suspend fun handle(socket: Socket) {
+        var token: String? = null
+        var session: Session? = null
+        var owner = false
         try {
-            // Read registration header:
-            // [MAGIC: 4B][MSG_REGISTER: 1B][ROLE: 1B][TOKEN: 16B]
-            val magic = readChannel.readInt()
-            if (magic != RelayProtocol.MAGIC) {
-                socket.close()
-                return@withContext
+            val read = socket.openReadChannel()
+            val write = socket.openWriteChannel(autoFlush = true)
+            val registration = withTimeout(pairingTimeoutMillis) {
+                require(read.readInt() == RelayProtocol.MAGIC)
+                val bytes = ByteArray(18); read.readFully(bytes)
+                require(bytes[0] == RelayProtocol.MSG_REGISTER && bytes[1] in byteArrayOf(1, 2))
+                bytes
             }
-            val headerBytes = ByteArray(2)
-            readChannel.readFully(headerBytes)
-            val msgType = headerBytes[0]
-            if (msgType != RelayProtocol.MSG_REGISTER) {
-                socket.close()
-                return@withContext
-            }
-            val role = headerBytes[1]
-            val tokenBytes = ByteArray(RelayProtocol.TOKEN_LENGTH)
-            readChannel.readFully(tokenBytes)
-
-            val tokenHex = tokenBytes.joinToString("") { "%02x".format(it) }
-            val currentSlot = PeerSlot(socket, readChannel, writeChannel, role)
-
-            val session: RelaySession
-            val isSecondPeer: Boolean
-            sessionsMutex.withLock {
-                val existing = sessions[tokenHex]
+            val key = registration.copyOfRange(2, 18).joinToString("") { "%02x".format(it) }
+            token = key
+            val slot = Slot(socket, read, write, registration[1])
+            val selected = mutex.withLock {
+                val existing = sessions[key]
                 if (existing == null) {
-                    session = RelaySession(tokenHex, peer1 = currentSlot)
-                    sessions[tokenHex] = session
-                    isSecondPeer = false
+                    require(sessions.size < maxWaitingSessions) { "Relay capacity reached" }
+                    owner = true
+                    Session(slot).also { sessions[key] = it }
                 } else {
-                    existing.peer2 = currentSlot
-                    session = existing
-                    isSecondPeer = true
+                    require(existing.second == null && existing.first.role != slot.role) { "Relay session already paired or wrong role" }
+                    existing.second = slot
+                    existing
                 }
             }
-
-            if (isSecondPeer) {
-                // Both peers are now present! Notify peer1 and peer2
-                val peer1 = session.peer1 ?: return@withContext
-                val peer2 = session.peer2 ?: return@withContext
-
-                // Send ACK to peer1
-                peer1.writeChannel.writeInt(RelayProtocol.MAGIC)
-                peer1.writeChannel.writeFully(byteArrayOf(RelayProtocol.MSG_REGISTER_ACK, RelayProtocol.STATUS_PEER_CONNECTED))
-                peer1.writeChannel.flush()
-
-                // Send ACK to peer2
-                peer2.writeChannel.writeInt(RelayProtocol.MAGIC)
-                peer2.writeChannel.writeFully(byteArrayOf(RelayProtocol.MSG_REGISTER_ACK, RelayProtocol.STATUS_PEER_CONNECTED))
-                peer2.writeChannel.flush()
-
-                session.pairedDeferred.complete(Unit)
-
-                // Start bidirectional streaming pipe
-                val jobA = launch {
-                    try {
-                        peer1.readChannel.copyTo(peer2.writeChannel)
-                    } catch (_: Exception) {}
-                }
-                val jobB = launch {
-                    try {
-                        peer2.readChannel.copyTo(peer1.writeChannel)
-                    } catch (_: Exception) {}
-                }
-
-                // Wait for either stream to finish/terminate
-                jobA.join()
-                jobB.join()
-
-                // Cleanup session
-                sessionsMutex.withLock {
-                    sessions.remove(tokenHex)
-                }
-                try { peer1.socket.close() } catch (_: Exception) {}
-                try { peer2.socket.close() } catch (_: Exception) {}
+            session = selected
+            if (owner) {
+                withTimeout(pairingTimeoutMillis) { selected.paired.await() }
+                selected.done.await()
             } else {
-                // Wait until second peer connects or session is cancelled
-                session.pairedDeferred.await()
+                val first = selected.first
+                for (peer in listOf(first, slot)) {
+                    peer.write.writeInt(RelayProtocol.MAGIC)
+                    peer.write.writeFully(byteArrayOf(RelayProtocol.MSG_REGISTER_ACK, RelayProtocol.STATUS_PEER_CONNECTED))
+                    peer.write.flush()
+                }
+                selected.paired.complete(Unit)
+                coroutineScope {
+                    val ended = CompletableDeferred<Unit>()
+                    suspend fun pipe(from: Slot, to: Slot) {
+                        try {
+                            val buffer = ByteArray(65536)
+                            while (true) {
+                                val n = withTimeout(600_000) { from.read.readAvailable(buffer) }
+                                if (n < 0) break
+                                if (n > 0) withTimeout(30_000) { to.write.writeFully(buffer, 0, n) }
+                            }
+                        } finally { ended.complete(Unit) }
+                    }
+                    val a = launch { pipe(first, slot) }
+                    val b = launch { pipe(slot, first) }
+                    ended.await()
+                    first.socket.close(); slot.socket.close()
+                    a.cancelAndJoin(); b.cancelAndJoin()
+                }
             }
-        } catch (_: Exception) {
-            try { socket.close() } catch (_: Exception) {}
+        } catch (e: TimeoutCancellationException) { com.app.quickpear.security.SecurityLog.event("relay_timeout")
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+          catch (_: Exception) { com.app.quickpear.security.SecurityLog.event("relay_session_rejected") }
+        finally {
+            val selected = session
+            if (selected != null) {
+                mutex.withLock { if (sessions[token] === selected) sessions.remove(token) }
+                selected.first.socket.close(); selected.second?.socket?.close()
+                selected.paired.cancel(); selected.done.complete(Unit)
+            }
+            socket.close()
         }
     }
-
-    suspend fun stop() = withContext(Dispatchers.IO) {
-        scope?.cancel()
-        scope = null
-        try { serverSocket?.close() } catch (_: Exception) {}
-        try { selectorManager?.close() } catch (_: Exception) {}
-        serverSocket = null
-        selectorManager = null
-        sessionsMutex.withLock {
-            sessions.clear()
-        }
+    suspend fun stop() {
+        scope?.cancel(); server?.close()
+        mutex.withLock { sessions.values.forEach { it.first.socket.close(); it.second?.socket?.close(); it.done.cancel() }; sessions.clear() }
+        selector?.close(); selector = null; server = null; scope = null
     }
 }

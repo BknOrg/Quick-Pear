@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.io.File
 
 plugins {
     alias(libs.plugins.androidApplication)
@@ -24,6 +25,23 @@ dependencies {
     debugImplementation(libs.compose.uiTooling)
 }
 
+val releaseStorePath = providers.environmentVariable("QUICKPEAR_KEYSTORE_PATH").orNull
+val releaseStorePassword = providers.environmentVariable("QUICKPEAR_KEYSTORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("QUICKPEAR_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("QUICKPEAR_KEY_PASSWORD").orNull
+val validateReleaseCredentials = tasks.register("validateReleaseCredentials") {
+    val credentials = listOf(releaseStorePath, releaseStorePassword, releaseKeyAlias, releaseKeyPassword)
+    doLast {
+        check(credentials.all { !it.isNullOrBlank() }) {
+            "Release signing requires QUICKPEAR_KEYSTORE_PATH, QUICKPEAR_KEYSTORE_PASSWORD, QUICKPEAR_KEY_ALIAS and QUICKPEAR_KEY_PASSWORD"
+        }
+        check(File(credentials[0]!!).isFile) { "Release keystore file is missing" }
+    }
+}
+tasks.matching { it.name == "validateSigningRelease" || it.name == "packageRelease" }.configureEach {
+    dependsOn(validateReleaseCredentials)
+}
+
 android {
     namespace = "com.app.quickpear"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
@@ -32,19 +50,26 @@ android {
         applicationId = "com.app.quickpear"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 3
-        versionName = "2.0.0"
+        versionCode = providers.gradleProperty("quickpear.versionCode").get().toInt()
+        versionName = providers.gradleProperty("quickpear.versionName").get()
     }
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+    signingConfigs {
+        create("release") {
+            storeFile = releaseStorePath?.let { file(it) }
+            storePassword = releaseStorePassword
+            keyAlias = releaseKeyAlias
+            keyPassword = releaseKeyPassword
+        }
+    }
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Default ke debug signing agar APK release bisa langsung di-install di perangkat Android
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

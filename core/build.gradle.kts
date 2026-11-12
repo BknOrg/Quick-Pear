@@ -29,6 +29,7 @@ kotlin {
         commonMain.dependencies {
             api(libs.okio)
             implementation(libs.ktor.network)
+            implementation("io.ktor:ktor-network-tls:${libs.versions.ktor.get()}")
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
         }
@@ -37,4 +38,17 @@ kotlin {
             implementation(libs.kotlinx.coroutines.test)
         }
     }
+}
+// Public broker checks are opt-in and never gate deterministic CI.
+tasks.named<Test>("jvmTest") {
+    filter.excludeTestsMatching("*Live*")
+    filter.excludeTestsMatching("*testLive*")
+}
+tasks.register<Test>("liveIntegrationTest") {
+    val unit = tasks.named<Test>("jvmTest").get()
+    testClassesDirs = unit.testClassesDirs
+    classpath = unit.classpath
+    filter.includeTestsMatching("*Live*")
+    filter.includeTestsMatching("*testLive*")
+    shouldRunAfter(unit)
 }

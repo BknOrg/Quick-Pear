@@ -38,9 +38,11 @@ class TransferForegroundService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
-    private val exceptionHandler = CoroutineExceptionHandler { _, _ -> }
+    private val exceptionHandler = CoroutineExceptionHandler { _, _ -> com.app.quickpear.security.SecurityLog.event("android_service_failed") }
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob() + exceptionHandler)
     private var progressJob: Job? = null
+    private var foregroundStarted = false
+    private var lastNotificationState: String? = null
 
     companion object {
         const val CHANNEL_ID = "quickpear_transfer_channel"
@@ -70,15 +72,25 @@ class TransferForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        initNode()
     }
 
     private fun initNode() {
         if (activeNode != null) return
 
         val dataDir = filesDir.canonicalPath.toPath()
+        val identityDir = noBackupFilesDir.canonicalPath.toPath()
+        val legacyIdentity = File(filesDir, "identity.json")
+        val protectedIdentity = File(noBackupFilesDir, "identity.json")
+        if (legacyIdentity.exists()) {
+            if (!protectedIdentity.exists()) {
+                val temp = File(noBackupFilesDir, "identity.json.tmp")
+                legacyIdentity.copyTo(temp, overwrite = true)
+                check(temp.renameTo(protectedIdentity)) { "Identity migration failed" }
+            }
+            check(legacyIdentity.delete()) { "Legacy identity cleanup failed" }
+        }
         val downloadFolder = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: filesDir,
             "Quick Pear"
         ).apply { mkdirs() }
         val downloadDir = downloadFolder.canonicalPath.toPath()
@@ -94,6 +106,28 @@ class TransferForegroundService : Service() {
 
         val node = QuickPearNode(
             dataDirectory = dataDir,
+            identityDirectory = identityDir,
+            onFileFinalized = { path ->
+                val file = File(path.toString())
+                val relativeFolder = file.parentFile?.relativeTo(downloadFolder)?.path?.replace('\\', '/') ?: ""
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Downloads.DISPLAY_NAME, file.name)
+                    put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
+                    put(android.provider.MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Quick Pear/$relativeFolder")
+                    put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: error("Cannot create received download")
+                try {
+                    contentResolver.openOutputStream(uri)?.use { output -> file.inputStream().use { it.copyTo(output) } }
+                        ?: error("Cannot write received download")
+                    contentResolver.update(uri, android.content.ContentValues().apply { put(android.provider.MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+                    file.delete()
+                } catch (e: Exception) {
+                    contentResolver.delete(uri, null, null)
+                    throw e
+                }
+            },
             downloadDirectory = downloadDir,
             deviceNameProvider = {
                 val model = Build.MODEL ?: "Android"
@@ -152,18 +186,24 @@ class TransferForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Reopening an activity must not replace an active transfer notification with readiness.
+        if (!foregroundStarted) {
+            val message = intent?.getStringExtra("status") ?: "Quick Pear is ready to receive files"
+            val notification = createNotification(message)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            } else {
+                startForeground(NOTIF_ID, notification)
+            }
+            foregroundStarted = true
+            lastNotificationState = "status:$message"
+            initNode()
+        }
         if (intent?.action == ACTION_CANCEL_TRANSFER) {
             activeNode?.cancelTransfer()
             releaseTransferLocks()
             updateNotification("Transfer cancelled")
             return START_STICKY
-        }
-        val statusMessage = intent?.getStringExtra("status") ?: "Quick Pear is ready to receive files"
-        val notification = createNotification(statusMessage)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-        } else {
-            startForeground(NOTIF_ID, notification)
         }
         return START_STICKY
     }
@@ -211,6 +251,8 @@ class TransferForegroundService : Service() {
             ).apply {
                 description = "Background file transfer readiness"
                 setShowBadge(false)
+                setSound(null, null)
+                enableVibration(false)
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
@@ -233,13 +275,18 @@ class TransferForegroundService : Service() {
             .setLargeIcon(BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher))
             .setContentIntent(pendingOpen)
             .setOngoing(true)
+            .setSilent(true)
+            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
 
     private fun updateNotification(message: String) {
+        val state = "status:$message"
+        if (lastNotificationState == state) return
         val manager = getSystemService(NotificationManager::class.java)
         manager?.notify(NOTIF_ID, createNotification(message))
+        lastNotificationState = state
     }
 
     private fun updateTransferNotification(progress: com.app.quickpear.domain.TransferProgress) {
@@ -271,12 +318,15 @@ class TransferForegroundService : Service() {
             .setContentIntent(pendingOpen)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancel", pendingCancel)
             .setOngoing(true)
+            .setSilent(true)
+            .setOnlyAlertOnce(true)
             .setProgress(100, percent, false)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
         val manager = getSystemService(NotificationManager::class.java)
         manager?.notify(NOTIF_ID, notification)
+        lastNotificationState = "transferring"
     }
 
     private fun updateCompletedNotification(fileName: String) {
@@ -295,12 +345,15 @@ class TransferForegroundService : Service() {
             .setLargeIcon(BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher))
             .setContentIntent(pendingOpen)
             .setOngoing(false)
+            .setSilent(true)
+            .setOnlyAlertOnce(true)
             .setProgress(0, 0, false)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
         val manager = getSystemService(NotificationManager::class.java)
         manager?.notify(NOTIF_ID, notification)
+        lastNotificationState = "completed"
     }
 
     private fun formatSpeed(bytesPerSec: Long): String {

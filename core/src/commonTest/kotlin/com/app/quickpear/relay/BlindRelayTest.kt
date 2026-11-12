@@ -94,7 +94,8 @@ class BlindRelayTest {
                 val client = BlindRelayClient()
                 val conn = client.connectAndPair("127.0.0.1", testPort, token, BlindRelayClient.ROLE_RECEIVER)
                 try {
-                    receiverEngine.receiveFiles(conn) { true }
+                    com.app.quickpear.security.Handshake.respond(conn, com.app.quickpear.security.DeviceIdentity.generate(), "Receiver")
+                receiverEngine.receiveFiles(conn) { true }
                 } finally {
                     conn.close()
                 }
@@ -104,7 +105,8 @@ class BlindRelayTest {
                 val client = BlindRelayClient()
                 val conn = client.connectAndPair("127.0.0.1", testPort, token, BlindRelayClient.ROLE_SENDER)
                 try {
-                    senderEngine.sendFiles(conn, "relay-session-101", mapOf(meta to filePath))
+                    com.app.quickpear.security.Handshake.initiate(conn, com.app.quickpear.security.DeviceIdentity.generate(), "Sender", com.app.quickpear.security.SessionPurpose.TRANSFER)
+                senderEngine.sendFiles(conn, "relay-session-101", mapOf(meta to filePath))
                 } finally {
                     conn.close()
                 }

@@ -1,189 +1,83 @@
 package com.app.quickpear.signaling
 
-import com.app.quickpear.domain.ConnectionType
-import com.app.quickpear.domain.DeviceType
-import com.app.quickpear.domain.FileMetadata
-import com.app.quickpear.domain.PeerDevice
-import com.app.quickpear.io.ChecksumUtil
-import com.app.quickpear.io.PartFileManager
-import com.app.quickpear.security.DeviceIdentity
-import com.app.quickpear.security.TrustStore
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
+import com.app.quickpear.domain.*
+import com.app.quickpear.io.*
+import com.app.quickpear.network.MessageTransport
+import com.app.quickpear.security.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
 import okio.FileSystem
-import okio.Path
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import kotlin.test.*
 
+/** A synchronous, in-process MQTT broker. No internet or timer-based message delivery. */
+private class MemoryBroker {
+    val listeners = java.util.concurrent.ConcurrentHashMap<String, (String, ByteArray) -> Unit>()
+    val wire = java.util.concurrent.CopyOnWriteArrayList<String>()
+    fun endpoint(): MessageTransport = object : MessageTransport {
+        private val connected = MutableStateFlow(false)
+        private val topics = mutableSetOf<String>()
+        override val isConnected: StateFlow<Boolean> = connected
+        override fun start() { connected.value = true }
+        override fun stop() { topics.forEach { listeners.remove(it) }; connected.value = false }
+        override suspend fun subscribe(topic: String, onMessage: (String, ByteArray) -> Unit) { topics.add(topic); listeners[topic] = onMessage }
+        override suspend fun unsubscribe(topic: String) { topics.remove(topic); listeners.remove(topic) }
+        override suspend fun publish(topic: String, message: ByteArray) { wire.add(message.decodeToString()); listeners[topic]?.invoke(topic, message) }
+    }
+    suspend fun ready(topic: String) { withTimeout(5000) { while (!listeners.containsKey(topic)) delay(5) } }
+}
 class SignalingClientTest {
-
-    @Test
-    fun testLiveCloudPairing() = runBlocking(Dispatchers.IO) {
-        val fs = FileSystem.SYSTEM
-        val tempBase = FileSystem.SYSTEM_TEMPORARY_DIRECTORY / "qp_test_${System.currentTimeMillis()}"
-        val dir1 = tempBase / "data1"
-        val dir2 = tempBase / "data2"
-        fs.createDirectories(dir1)
-        fs.createDirectories(dir2)
-
-        val id1 = DeviceIdentity.loadOrCreate(dir1, fs)
-        val id2 = DeviceIdentity.loadOrCreate(dir2, fs)
-
-        val trust1 = TrustStore(dir1, fs)
-        val trust2 = TrustStore(dir2, fs)
-
-        val client1 = SignalingClient(
-            identity = id1,
-            deviceNameProvider = { "Laptop Windows" },
-            deviceType = DeviceType.WINDOWS,
-            trustStore = trust1,
-            fileSystem = fs
-        )
-        val client2 = SignalingClient(
-            identity = id2,
-            deviceNameProvider = { "HP Android" },
-            deviceType = DeviceType.ANDROID,
-            trustStore = trust2,
-            fileSystem = fs
-        )
-
-        client1.start()
-        client2.start()
-
-        try {
-            // Wait for both to connect to broker
-            withTimeout(10000L) {
-                while (!client1.isSignalingActive.value || !client2.isSignalingActive.value) {
-                    kotlinx.coroutines.delay(100)
-                }
-            }
-
-            val pairingCode = "948210"
-            var sas1 = ""
-            var sas2 = ""
-
-            val job1 = async {
-                client1.startCloudPairing(pairingCode) { peerName, sas ->
-                    sas1 = sas
-                    true
-                }
-            }
-
-            kotlinx.coroutines.delay(1000)
-
-            val job2 = async {
-                client2.joinCloudPairing(pairingCode) { peerName, sas ->
-                    sas2 = sas
-                    true
-                }
-            }
-
-            val (res1, res2) = withTimeout(20000L) {
-                Pair(job1.await(), job2.await())
-            }
-
-            assertTrue(res1, "Host pairing should succeed")
-            assertTrue(res2, "Client pairing should succeed")
-            assertEquals(sas1, sas2, "SAS codes on both sides must match")
-            assertTrue(trust1.isTrusted(id2.deviceId), "Device 1 must trust Device 2")
-            assertTrue(trust2.isTrusted(id1.deviceId), "Device 2 must trust Device 1")
-        } finally {
-            client1.stop()
-            client2.stop()
-            try { fs.deleteRecursively(tempBase) } catch (_: Exception) {}
+    private val fs = FileSystem.SYSTEM
+    @Test fun cloudPairingTextAndMultiChunkTransferUseAuthenticatedEncryption() = runBlocking(Dispatchers.IO) {
+        withTimeout(15_000) {
+            val root = FileSystem.SYSTEM_TEMPORARY_DIRECTORY / "qp-cloud-${java.util.UUID.randomUUID()}"
+            fs.createDirectories(root)
+            val a = DeviceIdentity.generate(); val b = DeviceIdentity.generate()
+            val ta = TrustStore(root / "a"); val tb = TrustStore(root / "b")
+            val broker = MemoryBroker()
+            val text = CompletableDeferred<String>()
+            val textCalls = java.util.concurrent.atomic.AtomicInteger()
+            val sender = SignalingClient(a, { "A" }, DeviceType.WINDOWS, ta, mqttClient = broker.endpoint())
+            val receiver = SignalingClient(b, { "B" }, DeviceType.ANDROID, tb, PartFileManager(root / "downloads"),
+                onCloudTextReceived = { peer, content -> assertEquals(a.deviceId, peer.deviceId); textCalls.incrementAndGet(); text.complete(content) }, mqttClient = broker.endpoint())
+            sender.start(); receiver.start()
+            try {
+                broker.ready("quickpear/v2/inbox/${a.deviceId}"); broker.ready("quickpear/v2/inbox/${b.deviceId}")
+                var firstSas = ""; var secondSas = ""
+                val host = async { sender.startCloudPairing("948210") { _, sas -> firstSas = sas; true } }
+                broker.ready("quickpear/v2/pair/948210")
+                assertTrue(receiver.joinCloudPairing("948210") { _, sas -> secondSas = sas; true })
+                assertTrue(host.await()); assertEquals(firstSas, secondSas)
+                assertTrue(ta.isTrusted(b.deviceId)); assertTrue(tb.isTrusted(a.deviceId))
+                val peer = PeerDevice(b.deviceId, "B", "127.0.0.1", connectionType = ConnectionType.CLOUD_P2P)
+                assertTrue(sender.sendText(peer, "secret clipboard value"))
+                assertEquals("secret clipboard value", text.await())
+                val bytes = "private document contents".repeat(10000).encodeToByteArray()
+                val path = root / "source.bin"; fs.write(path) { write(bytes) }
+                val meta = FileMetadata.create(1, "result.bin", bytes.size.toLong(), sha256 = ChecksumUtil.calculateFileSha256(path, fs))
+                assertTrue(sender.sendFiles(peer, mapOf(meta to path), "stable-session"))
+                assertContentEquals(bytes, fs.read(root / "downloads" / "result.bin") { readByteArray() })
+                assertTrue(broker.wire.none { it.contains("secret clipboard value") || it.contains("private document contents") })
+                // An old unsigned application message cannot bypass the session handshake.
+                val endpoint = broker.endpoint()
+                endpoint.publish("quickpear/v2/inbox/${b.deviceId}", """{"action":"TEXT_SHARE","senderId":"${a.deviceId}","text":"forged"}""".encodeToByteArray())
+                assertEquals("secret clipboard value", text.await()); assertEquals(1, textCalls.get())
+            } finally { sender.stop(); receiver.stop(); fs.deleteRecursively(root) }
         }
     }
-
-    @Test
-    fun testLiveCloudFileTransfer() = runBlocking(Dispatchers.IO) {
-        val fs = FileSystem.SYSTEM
-        val tempBase = FileSystem.SYSTEM_TEMPORARY_DIRECTORY / "qp_transfer_${System.currentTimeMillis()}"
-        val dir1 = tempBase / "data1"
-        val dir2 = tempBase / "data2"
-        val downloads2 = tempBase / "downloads2"
-        fs.createDirectories(dir1)
-        fs.createDirectories(dir2)
-        fs.createDirectories(downloads2)
-
-        val id1 = DeviceIdentity.loadOrCreate(dir1, fs)
-        val id2 = DeviceIdentity.loadOrCreate(dir2, fs)
-
-        val trust1 = TrustStore(dir1, fs)
-        val trust2 = TrustStore(dir2, fs)
-
-        // Pre-trust each other
-        trust1.add(id2.deviceId, "Receiver Phone", id2.publicKey)
-        trust2.add(id1.deviceId, "Sender PC", id1.publicKey)
-
-        val partManager2 = PartFileManager(downloads2, fs)
-
-        val client1 = SignalingClient(
-            identity = id1,
-            deviceNameProvider = { "Sender PC" },
-            deviceType = DeviceType.WINDOWS,
-            trustStore = trust1,
-            fileSystem = fs
-        )
-        val client2 = SignalingClient(
-            identity = id2,
-            deviceNameProvider = { "Receiver Phone" },
-            deviceType = DeviceType.ANDROID,
-            trustStore = trust2,
-            partFileManager = partManager2,
-            fileSystem = fs
-        )
-
-        client1.start()
-        client2.start()
-
+    @Test fun pairingRejectionDoesNotCreateTrust() = runBlocking(Dispatchers.IO) {
+        val root = FileSystem.SYSTEM_TEMPORARY_DIRECTORY / "qp-pair-${java.util.UUID.randomUUID()}"
+        fs.createDirectories(root)
+        val a = DeviceIdentity.generate(); val b = DeviceIdentity.generate(); val ta = TrustStore(root / "a"); val tb = TrustStore(root / "b")
+        val broker = MemoryBroker()
+        val first = SignalingClient(a, { "A" }, DeviceType.WINDOWS, ta, mqttClient = broker.endpoint())
+        val second = SignalingClient(b, { "B" }, DeviceType.ANDROID, tb, mqttClient = broker.endpoint())
+        first.start(); second.start()
         try {
-            withTimeout(10000L) {
-                while (!client1.isSignalingActive.value || !client2.isSignalingActive.value) {
-                    kotlinx.coroutines.delay(100)
-                }
-            }
-
-            // Create a test file of 150 KB (spans multiple 64KB chunks)
-            val testFilePath = dir1 / "test_doc.txt"
-            val testContent = "QuickPear Cloud File Transfer Test\n".repeat(4500)
-            fs.write(testFilePath) { writeUtf8(testContent) }
-
-            val fileSize = fs.metadataOrNull(testFilePath)?.size ?: 0L
-            val fileSha256 = ChecksumUtil.calculateFileSha256(testFilePath, fs)
-            val meta = FileMetadata.create(
-                fileId = 1,
-                fileName = "test_doc.txt",
-                fileSizeBytes = fileSize,
-                chunkSizeBytes = 65536,
-                sha256 = fileSha256
-            )
-
-            val targetPeer = PeerDevice(
-                id = id2.deviceId,
-                name = "Receiver Phone",
-                ipAddress = "127.0.0.1",
-                port = 8888,
-                deviceType = DeviceType.ANDROID,
-                connectionType = ConnectionType.CLOUD_P2P
-            )
-
-            val success = withTimeout(30000L) {
-                client1.sendFiles(targetPeer, mapOf(meta to testFilePath))
-            }
-
-            assertTrue(success, "sendFiles should return true")
-
-            val downloadedFile = downloads2 / "test_doc.txt"
-            assertTrue(fs.exists(downloadedFile), "Downloaded file must exist")
-            val receivedContent = fs.read(downloadedFile) { readUtf8() }
-            assertEquals(testContent, receivedContent, "Downloaded content must match source exactly")
-        } finally {
-            client1.stop()
-            client2.stop()
-            try { fs.deleteRecursively(tempBase) } catch (_: Exception) {}
-        }
+            broker.ready("quickpear/v2/inbox/${a.deviceId}"); broker.ready("quickpear/v2/inbox/${b.deviceId}")
+            val host = async { first.startCloudPairing("123456") { _, _ -> false } }
+            broker.ready("quickpear/v2/pair/123456")
+            assertFalse(second.joinCloudPairing("123456") { _, _ -> true }); assertFalse(host.await())
+            assertFalse(ta.isTrusted(b.deviceId)); assertFalse(tb.isTrusted(a.deviceId))
+        } finally { first.stop(); second.stop(); fs.deleteRecursively(root) }
     }
 }

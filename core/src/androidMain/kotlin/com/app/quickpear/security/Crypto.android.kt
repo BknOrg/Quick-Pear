@@ -37,4 +37,27 @@ internal actual object Crypto {
     }
 
     actual fun randomBytes(size: Int): ByteArray = ByteArray(size).also { secureRandom.nextBytes(it) }
+    actual fun agree(privateKey: ByteArray, publicKey: ByteArray): ByteArray {
+        val factory = KeyFactory.getInstance("EC")
+        val agreement = javax.crypto.KeyAgreement.getInstance("ECDH")
+        agreement.init(factory.generatePrivate(PKCS8EncodedKeySpec(privateKey)))
+        val remote = factory.generatePublic(X509EncodedKeySpec(publicKey)) as java.security.interfaces.ECPublicKey
+        require(remote.params.curve.field.fieldSize == 256) { "Expected P-256 key" }
+        agreement.doPhase(remote, true)
+        return agreement.generateSecret()
+    }
+
+    actual fun hmac(key: ByteArray, data: ByteArray): ByteArray =
+        javax.crypto.Mac.getInstance("HmacSHA256").run {
+            init(javax.crypto.spec.SecretKeySpec(key, "HmacSHA256"))
+            doFinal(data)
+        }
+
+    actual fun crypt(encrypt: Boolean, key: ByteArray, nonce: ByteArray, aad: ByteArray, data: ByteArray): ByteArray =
+        javax.crypto.Cipher.getInstance("AES/GCM/NoPadding").run {
+            init(if (encrypt) javax.crypto.Cipher.ENCRYPT_MODE else javax.crypto.Cipher.DECRYPT_MODE,
+                javax.crypto.spec.SecretKeySpec(key, "AES"), javax.crypto.spec.GCMParameterSpec(128, nonce))
+            updateAAD(aad)
+            doFinal(data)
+        }
 }

@@ -10,7 +10,11 @@ permissions:
   contents: write
 
 jobs:
+  checks:
+    uses: ./.github/workflows/check.yml
+
   build-android:
+    needs: checks
     name: Build Android Release APK
     runs-on: ubuntu-latest
     steps:
@@ -27,8 +31,31 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install target platform
+        run: sdkmanager "platforms;android-37"
+
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.QUICKPEAR_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64" || { echo "Missing QUICKPEAR_KEYSTORE_BASE64"; exit 1; }
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/quickpear-release.jks"
+          chmod 600 "$RUNNER_TEMP/quickpear-release.jks"
+
       - name: Build Android Release APK
+        env:
+          QUICKPEAR_KEYSTORE_PATH: ${{ runner.temp }}/quickpear-release.jks
+          QUICKPEAR_KEYSTORE_PASSWORD: ${{ secrets.QUICKPEAR_KEYSTORE_PASSWORD }}
+          QUICKPEAR_KEY_ALIAS: ${{ secrets.QUICKPEAR_KEY_ALIAS }}
+          QUICKPEAR_KEY_PASSWORD: ${{ secrets.QUICKPEAR_KEY_PASSWORD }}
         run: ./gradlew :app:androidApp:assembleRelease --stacktrace
+
+      - name: Remove release keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/quickpear-release.jks"
 
       - name: Upload Android APK Artifact
         uses: actions/upload-artifact@v4
@@ -37,6 +64,7 @@ jobs:
           path: app/androidApp/build/outputs/apk/release/*.apk
 
   build-windows:
+    needs: checks
     name: Build Windows Release Packages (MSI & EXE)
     runs-on: windows-latest
     steps:
@@ -52,7 +80,6 @@ jobs:
 
       - name: Install WiX Toolset
         run: |
-          dotnet tool install --global wix --version 3.14.1 || true
           choco install wixtoolset -y
 
       - name: Build Windows MSI and EXE Installers

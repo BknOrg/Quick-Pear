@@ -3,7 +3,7 @@ package com.app.quickpear.session
 import com.app.quickpear.domain.MetadataRequest
 import com.app.quickpear.engine.TransferEngine
 import com.app.quickpear.network.KtorSocketClient
-import com.app.quickpear.network.SocketConnection
+import com.app.quickpear.network.FrameConnection
 import com.app.quickpear.protocol.ProtocolConstants
 import com.app.quickpear.security.DeviceIdentity
 import com.app.quickpear.security.Handshake
@@ -33,27 +33,27 @@ private const val PAIR_CONFIRM_TIMEOUT_MS = 120_000L
 
 /** Exchanges PAIR_CONFIRM with the peer; both sides must accept for the device to be trusted. */
 private suspend fun runPairing(
-    connection: SocketConnection,
+    connection: FrameConnection,
     result: HandshakeResult,
     trustStore: TrustStore,
     confirm: suspend (PeerIdentity, String) -> Boolean
-): Boolean {
+): Boolean = withTimeout(PAIR_CONFIRM_TIMEOUT_MS) {
     val localAccepted = confirm(result.peer, result.sasCode)
     connection.sendFrame(ProtocolConstants.MSG_PAIR_CONFIRM, byteArrayOf(if (localAccepted) 1 else 0))
 
-    val header = withTimeout(PAIR_CONFIRM_TIMEOUT_MS) { connection.readHeader() }
+    val header = connection.readHeader(PAIR_CONFIRM_TIMEOUT_MS)
     if (header.messageType != ProtocolConstants.MSG_PAIR_CONFIRM) {
         throw HandshakeException("Expected PAIR_CONFIRM but got ${header.messageType}")
     }
     val peerAccepted = connection.readFramePayload(header.payloadLength, 16).firstOrNull() == 1.toByte()
 
     if (localAccepted && peerAccepted) {
-        val remoteIp = connection.remoteAddress.removePrefix("/").substringBefore(":")
-        val remotePort = connection.remoteAddress.substringAfter(":", "8888").toIntOrNull() ?: 8888
+        val remoteIp = connection.remoteHost
+        val remotePort = trustStore.get(result.peer.deviceId)?.lastKnownPort ?: 8888
         trustStore.add(result.peer.deviceId, result.peer.name, result.peer.publicKey, remoteIp, remotePort)
-        return true
+        return@withTimeout true
     }
-    return false
+    false
 }
 
 /** Server side: authenticates every incoming connection, then pairs or receives files. */
@@ -67,19 +67,20 @@ class IncomingConnectionHandler(
     private val onTextReceived: ((PeerIdentity, String) -> Unit)? = null
 ) {
     /** Returns the handshake result, or null when the peer failed authentication. */
-    suspend fun handle(connection: SocketConnection): HandshakeResult? {
+    suspend fun handle(connection: FrameConnection): HandshakeResult? {
         val handshake = try {
             Handshake.respond(connection, identity, deviceName())
         } catch (_: HandshakeException) {
             return null
         }
 
-        val remoteIp = connection.remoteAddress.removePrefix("/").substringBefore(":")
-        val remotePort = connection.remoteAddress.substringAfter(":", "8888").toIntOrNull() ?: 8888
+        val remoteIp = connection.remoteHost
+        val remotePort = trustStore.get(handshake.peer.deviceId)?.lastKnownPort ?: 8888
 
         onPeerSeen?.invoke(handshake.peer, remoteIp, remotePort)
 
         when (handshake.purpose) {
+            SessionPurpose.HOTSPOT, SessionPurpose.RELAY_TRANSFER -> throw HandshakeException("Cloud control required")
             SessionPurpose.PROBE -> {
                 if (trustStore.isTrusted(handshake.peer.deviceId)) {
                     trustStore.updateLastKnownIp(handshake.peer.deviceId, remoteIp, remotePort)
@@ -90,6 +91,7 @@ class IncomingConnectionHandler(
                 approval.onPairingRequest(peer, sas)
             }
             SessionPurpose.TEXT_SHARE -> {
+                require(trustStore.isTrusted(handshake.peer.deviceId)) { "Pair this device before sharing text" }
                 if (trustStore.isTrusted(handshake.peer.deviceId)) {
                     trustStore.updateLastKnownIp(handshake.peer.deviceId, remoteIp, remotePort)
                 }
@@ -144,6 +146,7 @@ class PeerClient(
         try {
             Handshake.initiate(connection, identity, deviceName(), SessionPurpose.TRANSFER, expectedPeerId)
             engine.sendFiles(connection, sessionId, files)
+
         } finally {
             connection.close()
         }
@@ -164,7 +167,8 @@ class PeerClient(
             val bytes = text.encodeToByteArray()
             connection.sendFrame(ProtocolConstants.MSG_TEXT_SHARE, bytes)
             val ackHeader = withTimeout(10_000L) { connection.readHeader() }
-            return ackHeader.messageType == ProtocolConstants.MSG_TEXT_SHARE_ACK
+            return ackHeader.messageType == ProtocolConstants.MSG_TEXT_SHARE_ACK &&
+                connection.readFramePayload(ackHeader.payloadLength, 1).contentEquals(byteArrayOf(1))
         } finally {
             connection.close()
         }

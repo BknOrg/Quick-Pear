@@ -30,6 +30,9 @@ class SocketConnectionTest {
         val clientConnection = client.connect("127.0.0.1", testPort)
         val serverConnection = serverJob.await()
 
+        val handshake = async { com.app.quickpear.security.Handshake.respond(serverConnection, com.app.quickpear.security.DeviceIdentity.generate(), "Server") }
+        com.app.quickpear.security.Handshake.initiate(clientConnection, com.app.quickpear.security.DeviceIdentity.generate(), "Client", com.app.quickpear.security.SessionPurpose.TRANSFER)
+        handshake.await()
         try {
             // Client sends MetadataRequest
             val request = MetadataRequest(

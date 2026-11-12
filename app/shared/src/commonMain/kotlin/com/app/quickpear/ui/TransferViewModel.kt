@@ -98,6 +98,13 @@ class TransferViewModel(
         }
 
         observeJob = viewModelScope.launch {
+        launch {
+            node.webShareServer.status.collect { status ->
+                if (!status.active) _uiState.update { it.copy(webShareUrl = null, webShareFiles = emptyList(), webShareHotspotInfo = null) }
+            }
+        }
+
+
             launch {
                 node.onlineDevices.collectLatest { devices ->
                     _uiState.update { it.copy(discoveredDevices = devices) }
@@ -233,7 +240,6 @@ class TransferViewModel(
     private var activeTransferJob: Job? = null
 
     fun cancelTransfer() {
-        activeTransferJob?.cancel()
         activeNode?.cancelTransfer()
         _uiState.update {
             it.copy(statusMessage = "Transfer cancelled")
@@ -510,14 +516,14 @@ class TransferViewModel(
                     }
                 }
 
-                val port = node.webShareServer.start(paths)
-                val shareUrl = "http://$ip:$port"
+                node.webShareServer.start(paths)
+                val shareUrl = node.webShareServer.shareUrl(ip)
                 _uiState.update {
                     it.copy(
                         webShareUrl = shareUrl,
                         webShareFiles = paths,
                         webShareHotspotInfo = hotspotDesc,
-                        statusMessage = "Web Share active at $shareUrl"
+                        statusMessage = "Web Share active: local HTTP, expires in 15 minutes"
                     )
                 }
             } catch (e: Exception) {

@@ -1,336 +1,164 @@
 package com.app.quickpear.engine
 
-import com.app.quickpear.domain.ChunkAck
-import com.app.quickpear.domain.ChunkData
-import com.app.quickpear.domain.FileMetadata
-import com.app.quickpear.domain.MetadataRequest
-import com.app.quickpear.domain.TransferProgress
-import com.app.quickpear.domain.TransferStatus
-import com.app.quickpear.io.ChecksumUtil
-import com.app.quickpear.io.ChunkWriter
-import com.app.quickpear.io.FileChunker
-import com.app.quickpear.io.PartFileManager
-import com.app.quickpear.network.SocketConnection
-import com.app.quickpear.protocol.ProtocolConstants
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.withContext
+import com.app.quickpear.domain.*
+import com.app.quickpear.io.*
+import com.app.quickpear.network.FrameConnection
+import com.app.quickpear.protocol.ProtocolConstants as P
+import com.app.quickpear.security.SecurityLog
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okio.FileSystem
 import okio.Path
 
-class TransferEngine(
-    private val partFileManager: PartFileManager,
-    private val fileSystem: FileSystem = FileSystem.SYSTEM
-) {
-    private val _progressState = MutableStateFlow<TransferProgress?>(null)
-    val progressState: StateFlow<TransferProgress?> = _progressState.asStateFlow()
-
-    private val chunkWriter = ChunkWriter(fileSystem)
-    private val fileChunker = FileChunker(fileSystem)
-
-    @kotlin.concurrent.Volatile
-    private var activeConnection: SocketConnection? = null
-    @kotlin.concurrent.Volatile
-    private var currentReceivingFileName: String? = null
-    @kotlin.concurrent.Volatile
-    private var isCancelled = false
-
-    private fun failed(message: String, totalBytes: Long = 0) {
-        _progressState.value = TransferProgress(
-            fileId = 0, fileName = "", bytesTransferred = 0, totalBytes = totalBytes,
-            transferSpeedBytesPerSec = 0, currentChunkIndex = 0, totalChunks = 0,
-            status = TransferStatus.FAILED, errorMessage = message
-        )
+class TransferEngine(private val partFileManager: PartFileManager, private val fileSystem: FileSystem = FileSystem.SYSTEM) {
+    private val progress = MutableStateFlow<TransferProgress?>(null)
+    val progressState: StateFlow<TransferProgress?> = progress.asStateFlow()
+    private val transferLock = Mutex()
+    @Volatile private var activeConnection: FrameConnection? = null
+    @Volatile private var receivingKey: TransferFileKey? = null
+    @Volatile private var cancelled = false
+    private val cancelScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    fun updateProgress(value: TransferProgress?) { progress.value = value }
+    private fun failed(message: String) {
+        SecurityLog.event("transfer_failed")
+        progress.value = TransferProgress(0, "", 0, 0, 0, 0, 0, TransferStatus.FAILED, message)
     }
-
-    fun updateProgress(progress: TransferProgress?) {
-        _progressState.value = progress
-    }
-
-    /**
-     * Cancels the active file transfer, cleans up partial files on receiver, and terminates connection.
-     */
     fun cancelTransfer(reason: String = "Transfer cancelled by user") {
-        isCancelled = true
-        val receivingFile = currentReceivingFileName
-        if (receivingFile != null) {
-            try {
-                partFileManager.resetPart(receivingFile)
-            } catch (_: Exception) {}
-            currentReceivingFileName = null
+        cancelled = true
+        receivingKey?.let { partFileManager.resetPart(it) }
+        val connection = activeConnection
+        if (connection != null) cancelScope.launch {
+            try { withTimeout(3000) { connection.sendFrame(P.MSG_CANCEL, byteArrayOf()) } }
+            catch (_: Exception) { SecurityLog.event("cancel_notification_failed") }
+            finally { connection.close() }
         }
-        try {
-            activeConnection?.close()
-        } catch (_: Exception) {}
-        activeConnection = null
         failed(reason)
     }
-
-    /** Sends [chunkData] and waits for a successful ACK, retrying up to [MAX_CHUNK_ATTEMPTS] times. */
-    private suspend fun sendChunkWithRetry(connection: SocketConnection, chunkData: ChunkData) {
-        var attempt = 0
-        while (true) {
-            attempt++
-            connection.sendChunkData(chunkData)
-            val ackHeader = connection.readHeader()
-            if (ackHeader.messageType != ProtocolConstants.MSG_CHUNK_ACK) {
-                throw IllegalStateException("Expected CHUNK_ACK but got ${ackHeader.messageType}")
-            }
-            val ack = connection.readChunkAck()
-            if (ack.status == ChunkAck.STATUS_SUCCESS) return
-            if (attempt >= MAX_CHUNK_ATTEMPTS) {
-                throw IllegalStateException("Chunk ${chunkData.header.chunkId} failed after $attempt attempts")
-            }
-        }
+    private fun update(meta: FileMetadata, bytes: Long, start: Long, index: Long) {
+        val seconds = ((System.currentTimeMillis() - start) / 1000.0).coerceAtLeast(0.001)
+        progress.value = TransferProgress(meta.fileId, meta.fileName, bytes, meta.fileSizeBytes,
+            (bytes / seconds).toLong(), index, meta.totalChunks, TransferStatus.TRANSFERRING)
     }
-
-    /**
-     * Handles sending a batch of files to a remote peer via socket connection.
-     */
-    suspend fun sendFiles(
-        connection: SocketConnection,
-        sessionId: String,
-        filesMap: Map<FileMetadata, Path>
-    ) = withContext(Dispatchers.IO) {
-        isCancelled = false
-        activeConnection = connection
-        try {
-            val files = filesMap.keys.toList()
-            connection.sendMetadataRequest(MetadataRequest(sessionId = sessionId, files = files))
-
-            // METADATA_RESP
-            val header = connection.readHeader()
-            if (header.messageType != ProtocolConstants.MSG_METADATA_RESP) {
-                failed("Unexpected response message type: ${header.messageType}")
-                return@withContext
-            }
-            val (respCode, resumeOffset) = connection.readMetadataResponse()
-            when (respCode) {
-                ProtocolConstants.METADATA_RESP_ACCEPTED -> Unit
-                ProtocolConstants.METADATA_RESP_INSUFFICIENT_STORAGE -> {
-                    failed("Receiver device storage is insufficient")
-                    return@withContext
-                }
-                else -> {
-                    failed("Transfer rejected by remote peer (code: $respCode)")
-                    return@withContext
-                }
-            }
-
-            val startTime = System.currentTimeMillis()
-
-            for ((index, metadata) in files.withIndex()) {
-                val sourcePath = filesMap[metadata] ?: continue
-                // The resume offset only applies to the first file of the batch.
-                val startChunk = if (index == 0) resumeOffset else 0L
-                var bytesSent = (startChunk * metadata.chunkSizeBytes).coerceAtMost(metadata.fileSizeBytes)
-
-                _progressState.value = TransferProgress(
-                    fileId = metadata.fileId,
-                    fileName = metadata.fileName,
-                    bytesTransferred = bytesSent,
-                    totalBytes = metadata.fileSizeBytes,
-                    transferSpeedBytesPerSec = 0,
-                    currentChunkIndex = startChunk,
-                    totalChunks = metadata.totalChunks,
-                    status = TransferStatus.TRANSFERRING
-                )
-
-                val sessionStartBytes = bytesSent
-                fileChunker.readChunksFlow(sourcePath, startChunkIndex = startChunk).collect { chunkData ->
-                    sendChunkWithRetry(connection, chunkData)
-
-                    bytesSent += chunkData.payloadBytes.size
-                    val elapsedSec = ((System.currentTimeMillis() - startTime) / 1000.0).coerceAtLeast(0.001)
-                    val speed = ((bytesSent - sessionStartBytes) / elapsedSec).toLong()
-
-                    _progressState.value = TransferProgress(
-                        fileId = metadata.fileId,
-                        fileName = metadata.fileName,
-                        bytesTransferred = bytesSent,
-                        totalBytes = metadata.fileSizeBytes,
-                        transferSpeedBytesPerSec = speed,
-                        currentChunkIndex = chunkData.header.chunkId,
-                        totalChunks = metadata.totalChunks,
-                        status = TransferStatus.TRANSFERRING
-                    )
-                }
-
-                // TRANSFER_COMPLETE -> TRANSFER_COMPLETE_ACK
-                val sha256Bytes = ChecksumUtil.calculateFileSha256Bytes(sourcePath, fileSystem)
-                connection.sendTransferComplete(metadata.fileId, sha256Bytes)
-
-                val completeHeader = connection.readHeader()
-                if (completeHeader.messageType != ProtocolConstants.MSG_TRANSFER_COMPLETE_ACK) {
-                    throw IllegalStateException("Expected TRANSFER_COMPLETE_ACK but got ${completeHeader.messageType}")
-                }
-                val (_, finalStatus) = connection.readTransferCompleteAck()
-                if (finalStatus != 0x00.toByte()) {
-                    failed("File ${metadata.fileName} corrupted during transfer (checksum mismatch)")
-                    return@withContext
-                }
-            }
-
-            _progressState.value = _progressState.value?.copy(status = TransferStatus.COMPLETED)
-        } catch (e: CancellationException) {
-            failed("Transfer cancelled by user")
-            throw e
-        } catch (e: Exception) {
-            if (isCancelled) {
-                failed("Transfer cancelled by user")
-            } else {
-                failed("Transfer failed: ${e.message}")
-            }
-        } finally {
-            activeConnection = null
-        }
-    }
-
-    /**
-     * Handles receiving files from a remote peer via socket connection.
-     */
-    suspend fun receiveFiles(
-        connection: SocketConnection,
-        onApprovalRequested: suspend (MetadataRequest) -> Boolean
-    ) = withContext(Dispatchers.IO) {
-        isCancelled = false
-        activeConnection = connection
-        try {
-            val header = connection.readHeader()
-            if (header.messageType != ProtocolConstants.MSG_METADATA_REQ) {
-                return@withContext
-            }
-
-            val request = connection.readMetadataRequest(header.payloadLength)
-            val totalRequiredBytes = request.files.sumOf { it.fileSizeBytes }
-
-            if (!partFileManager.hasSufficientStorage(totalRequiredBytes)) {
-                connection.sendMetadataResponse(ProtocolConstants.METADATA_RESP_INSUFFICIENT_STORAGE, 0L)
-                failed("Storage space is insufficient", totalRequiredBytes)
-                return@withContext
-            }
-
-            if (!onApprovalRequested(request)) {
-                connection.sendMetadataResponse(ProtocolConstants.METADATA_RESP_REJECTED, 0L)
-                failed("Transfer rejected by user")
-                return@withContext
-            }
-
-            val firstFile = request.files.firstOrNull() ?: return@withContext
-            val resumeOffset = partFileManager.getStartChunkOffset(firstFile.fileName)
-            connection.sendMetadataResponse(ProtocolConstants.METADATA_RESP_ACCEPTED, resumeOffset)
-
-            val startTime = System.currentTimeMillis()
-
-            for ((index, metadata) in request.files.withIndex()) {
-                currentReceivingFileName = metadata.fileName
-                val startChunk = if (index == 0) resumeOffset else 0L
-                if (startChunk == 0L) partFileManager.resetPart(metadata.fileName)
-
-                partFileManager.getOrCreateMeta(
-                    fileId = metadata.fileId,
-                    fileName = metadata.fileName,
-                    totalSize = metadata.fileSizeBytes,
-                    sha256 = metadata.expectedSha256
-                )
-
-                val partPath = partFileManager.getPartPath(metadata.fileName)
-                partFileManager.ensurePartExists(metadata.fileName)
-
-                var bytesReceived = (startChunk * metadata.chunkSizeBytes).coerceAtMost(metadata.fileSizeBytes)
-                val sessionStartBytes = bytesReceived
-
-                _progressState.value = TransferProgress(
-                    fileId = metadata.fileId,
-                    fileName = metadata.fileName,
-                    bytesTransferred = bytesReceived,
-                    totalBytes = metadata.fileSizeBytes,
-                    transferSpeedBytesPerSec = 0,
-                    currentChunkIndex = startChunk,
-                    totalChunks = metadata.totalChunks,
-                    status = TransferStatus.TRANSFERRING
-                )
-
-                // Keep reading until the sender signals TRANSFER_COMPLETE for this file.
-                // Not bounded by byte count so the final handshake is always consumed
-                // (also required for zero-byte files).
-                var fileDone = false
-                while (!fileDone) {
-                    val msg = connection.readHeader()
-                    when (msg.messageType) {
-                        ProtocolConstants.MSG_CHUNK_DATA -> {
-                            val chunkData = connection.readChunkData(msg.payloadLength)
-                            if (chunkWriter.writeChunk(partPath, chunkData)) {
-                                partFileManager.markChunkReceived(metadata.fileName, chunkData.header.chunkId)
-                                connection.sendChunkAck(ChunkAck(chunkData.header.chunkId, ChunkAck.STATUS_SUCCESS))
-                                bytesReceived += chunkData.payloadBytes.size
-                            } else {
-                                connection.sendChunkAck(ChunkAck(chunkData.header.chunkId, ChunkAck.STATUS_CHECKSUM_MISMATCH))
-                            }
-
-                            val elapsedSec = ((System.currentTimeMillis() - startTime) / 1000.0).coerceAtLeast(0.001)
-                            _progressState.value = TransferProgress(
-                                fileId = metadata.fileId,
-                                fileName = metadata.fileName,
-                                bytesTransferred = bytesReceived,
-                                totalBytes = metadata.fileSizeBytes,
-                                transferSpeedBytesPerSec = ((bytesReceived - sessionStartBytes) / elapsedSec).toLong(),
-                                currentChunkIndex = chunkData.header.chunkId,
-                                totalChunks = metadata.totalChunks,
-                                status = TransferStatus.TRANSFERRING
-                            )
-                        }
-                        ProtocolConstants.MSG_TRANSFER_COMPLETE -> {
-                            val (fileId, _) = connection.readTransferComplete()
-                            val computedSha = ChecksumUtil.calculateFileSha256(partPath, fileSystem)
-                            if (computedSha.equals(metadata.expectedSha256, ignoreCase = true)) {
-                                partFileManager.finalizeTransfer(metadata.fileName, metadata.relativePath)
-                                connection.sendTransferCompleteAck(fileId, 0x00.toByte())
-                                fileDone = true
-                                currentReceivingFileName = null
-                            } else {
-                                // Corrupted: discard so the next attempt restarts from chunk 0.
-                                partFileManager.resetPart(metadata.fileName)
-                                connection.sendTransferCompleteAck(fileId, 0x01.toByte())
-                                failed("File ${metadata.fileName} corrupted (checksum mismatch)")
-                                return@withContext
+    suspend fun sendFiles(connection: FrameConnection, sessionId: String, filesMap: Map<FileMetadata, Path>) =
+        withContext(Dispatchers.IO) { transferLock.withLock {
+            cancelled = false; activeConnection = connection
+            try {
+                check(connection.authenticatedPeerId != null) { "Authenticated session required" }
+                val request = MetadataRequest(sessionId, filesMap.keys.toList())
+                request.validate()
+                connection.sendMetadataRequest(request)
+                val start = System.currentTimeMillis()
+                for (meta in request.files) {
+                    val response = connection.readHeader(120_000)
+                    require(response.messageType == P.MSG_METADATA_RESP)
+                    val (code, offset) = connection.readMetadataResponse()
+                    require(code == P.METADATA_RESP_ACCEPTED) { "Receiver declined transfer or storage unavailable" }
+                    require(offset in 0..meta.totalChunks)
+                    val source = filesMap.getValue(meta)
+                    require(fileSystem.metadata(source).size == meta.fileSizeBytes) { "Source changed" }
+                    var bytes = minOf(offset * meta.chunkSizeBytes, meta.fileSizeBytes)
+                    update(meta, bytes, start, offset)
+                    FileChunker(fileSystem, meta.chunkSizeBytes).readChunksFlow(source, offset).collect { chunk ->
+                        var accepted = false
+                        repeat(3) {
+                            if (!accepted) {
+                                connection.sendChunkData(chunk)
+                                val header = connection.readHeader()
+                                require(header.messageType == P.MSG_CHUNK_ACK) { "Transfer cancelled or invalid ACK" }
+                                val ack = connection.readChunkAck()
+                                require(ack.chunkId == chunk.header.chunkId)
+                                accepted = ack.status == ChunkAck.STATUS_SUCCESS
                             }
                         }
-                        else -> throw IllegalStateException("Unexpected message type ${msg.messageType}")
+                        check(accepted) { "Chunk rejected" }
+                        bytes += chunk.payloadBytes.size
+                        update(meta, bytes, start, chunk.header.chunkId + 1)
+                    }
+                    connection.sendTransferComplete(meta.fileId, ChecksumUtil.calculateFileSha256Bytes(source, fileSystem))
+                    val header = connection.readHeader()
+                    require(header.messageType == P.MSG_TRANSFER_COMPLETE_ACK)
+                    val (id, status) = connection.readTransferCompleteAck()
+                    require(id == meta.fileId && status == 0.toByte()) { "Final integrity check rejected" }
+                }
+                progress.value = progress.value?.copy(status = TransferStatus.COMPLETED)
+            } catch (e: TimeoutCancellationException) { SecurityLog.event("transfer_timeout"); failed("Transfer timed out; retry to resume") }
+              catch (e: CancellationException) { failed("Transfer interrupted; retry to resume"); throw e }
+              catch (_: Exception) { failed(if (cancelled) "Transfer cancelled by user" else "Transfer failed; retry to resume") }
+            finally { activeConnection = null }
+        } }
+
+    suspend fun receiveFiles(connection: FrameConnection, onApprovalRequested: suspend (MetadataRequest) -> Boolean) =
+        withContext(Dispatchers.IO) { transferLock.withLock {
+            cancelled = false; activeConnection = connection
+            try {
+                val sender = connection.authenticatedPeerId ?: error("Authenticated session required")
+                val header = connection.readHeader()
+                require(header.messageType == P.MSG_METADATA_REQ)
+                val request = connection.readMetadataRequest(header.payloadLength)
+                val total = request.validate()
+                if (!partFileManager.hasSufficientStorage(total)) {
+                    connection.sendMetadataResponse(P.METADATA_RESP_INSUFFICIENT_STORAGE, 0)
+                    error("Storage unavailable")
+                }
+                if (!withTimeout(120_000) { onApprovalRequested(request) }) {
+                    connection.sendMetadataResponse(P.METADATA_RESP_REJECTED, 0)
+                    error("Transfer rejected")
+                }
+                val start = System.currentTimeMillis()
+                for (meta in request.files) {
+                    val key = TransferFileKey("$sender:${request.sessionId}", meta.fileId)
+                    receivingKey = key
+                    partFileManager.prepare(key, sender, meta)
+                    val offset = partFileManager.getStartChunkOffset(key)
+                    connection.sendMetadataResponse(P.METADATA_RESP_ACCEPTED, offset)
+                    update(meta, partFileManager.receivedBytes(key), start, offset)
+                    var done = false
+                    while (!done) {
+                        val message = connection.readHeader(P.IDLE_TIMEOUT_MS)
+                        when (message.messageType) {
+                            P.MSG_CANCEL -> {
+                                connection.readFramePayload(message.payloadLength, 0)
+                                cancelled = true; partFileManager.resetPart(key)
+                                error("Transfer cancelled")
+                            }
+                            P.MSG_CHUNK_DATA -> {
+                                val chunk = connection.readChunkData(message.payloadLength)
+                                if (ChecksumUtil.calculateChunkChecksum(chunk.payloadBytes) != chunk.header.checksum) {
+                                    connection.sendChunkAck(ChunkAck(chunk.header.chunkId, ChunkAck.STATUS_CHECKSUM_MISMATCH))
+                                } else {
+                                    partFileManager.writeChunk(key, chunk.header.chunkId, chunk.payloadBytes, chunk.header.checksum)
+                                    connection.sendChunkAck(ChunkAck(chunk.header.chunkId, ChunkAck.STATUS_SUCCESS))
+                                    update(meta, partFileManager.receivedBytes(key), start, chunk.header.chunkId + 1)
+                                }
+                            }
+                            P.MSG_TRANSFER_COMPLETE -> {
+                                val (fileId, hash) = connection.readTransferComplete()
+                                require(fileId == meta.fileId)
+                                try {
+                                    require(hash.contentEquals(meta.expectedSha256.hexBytes())) { "Source changed during transfer" }
+                                    partFileManager.finalizeTransfer(key)
+                                    connection.sendTransferCompleteAck(fileId, 0)
+                                    done = true; receivingKey = null
+                                } catch (_: Exception) {
+                                    partFileManager.resetPart(key)
+                                    connection.sendTransferCompleteAck(fileId, 1)
+                                    error("Final integrity check failed")
+                                }
+                            }
+                            else -> error("Unexpected transfer frame")
+                        }
                     }
                 }
+                progress.value = progress.value?.copy(status = TransferStatus.COMPLETED)
+            } catch (e: TimeoutCancellationException) { SecurityLog.event("transfer_timeout"); failed("Transfer timed out; retry to resume") }
+              catch (e: CancellationException) { failed("Transfer interrupted; retry to resume"); throw e }
+              catch (_: Exception) { failed(if (cancelled) "Transfer cancelled by user" else "Receiving failed; retry to resume") }
+            finally {
+                receivingKey?.let { if (cancelled) partFileManager.resetPart(it) else partFileManager.flushMeta(it) }
+                receivingKey = null; activeConnection = null
             }
-
-            _progressState.value = _progressState.value?.copy(status = TransferStatus.COMPLETED)
-        } catch (e: CancellationException) {
-            val partial = currentReceivingFileName
-            if (partial != null) {
-                try { partFileManager.resetPart(partial) } catch (_: Exception) {}
-                currentReceivingFileName = null
-            }
-            failed("Transfer cancelled by user")
-            throw e
-        } catch (e: Exception) {
-            val partial = currentReceivingFileName
-            if (partial != null) {
-                try { partFileManager.resetPart(partial) } catch (_: Exception) {}
-                currentReceivingFileName = null
-            }
-            if (isCancelled) {
-                failed("Transfer cancelled by user")
-            } else {
-                failed("Receiving failed: ${e.message}")
-            }
-        } finally {
-            activeConnection = null
-            currentReceivingFileName = null
-        }
-    }
-
-    private companion object {
-        const val MAX_CHUNK_ATTEMPTS = 3
-    }
+        } }
+    private fun String.hexBytes(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 }

@@ -1,5 +1,6 @@
 package com.app.quickpear.network
 
+import io.ktor.network.tls.tls
 import io.ktor.network.selector.SelectorManager
 import io.ktor.network.sockets.Socket
 import io.ktor.network.sockets.aSocket
@@ -32,9 +33,10 @@ import kotlin.random.Random
  */
 class MqttClient(
     val clientId: String = "qp_" + Random.nextLong(100_000_000, 999_999_999),
-    val hosts: List<String> = listOf("broker.emqx.io", "broker.hivemq.com"),
-    val port: Int = 1883
-) {
+    val hosts: List<String> = (System.getProperty("quickpear.mqtt.hosts") ?: "broker.emqx.io,broker.hivemq.com").split(',').map { it.trim() }.filter { it.isNotEmpty() },
+    val port: Int = (System.getProperty("quickpear.mqtt.port") ?: "8883").toInt()
+) : MessageTransport {
+    init { require(hosts.isNotEmpty() && port in 1..65535) }
     private val scope = CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
     private val writeMutex = Mutex()
     private var connectionJob: Job? = null
@@ -46,12 +48,13 @@ class MqttClient(
     private var selectorManager: SelectorManager? = null
 
     private val _isConnected = MutableStateFlow(false)
-    val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+    override val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
-    private val subscriptions = mutableMapOf<String, (String, ByteArray) -> Unit>()
+    private val subscriptions = java.util.concurrent.ConcurrentHashMap<String, (String, ByteArray) -> Unit>()
+    private val pendingSubscriptions = java.util.concurrent.ConcurrentHashMap<Int, kotlinx.coroutines.CompletableDeferred<Unit>>()
     private var packetIdCounter = 1
 
-    fun start() {
+    override fun start() {
         if (connectionJob != null) return
         connectionJob = scope.launch {
             var hostIndex = 0
@@ -69,7 +72,7 @@ class MqttClient(
         }
     }
 
-    fun stop() {
+    override fun stop() {
         connectionJob?.cancel()
         connectionJob = null
         cleanup()
@@ -77,6 +80,8 @@ class MqttClient(
 
     private fun cleanup() {
         _isConnected.value = false
+        pendingSubscriptions.values.forEach { it.cancel() }
+        pendingSubscriptions.clear()
         pingJob?.cancel()
         pingJob = null
         readJob?.cancel()
@@ -93,7 +98,9 @@ class MqttClient(
     private suspend fun connectToBroker(host: String) = withContext(Dispatchers.IO) {
         val selector = SelectorManager(Dispatchers.IO)
         selectorManager = selector
-        val sock = aSocket(selector).tcp().connect(host, port)
+        val sock = kotlinx.coroutines.withTimeout(30_000) {
+            aSocket(selector).tcp().connect(host, port).tls(Dispatchers.IO) { serverName = host }
+        }
         socket = sock
         val readChan = sock.openReadChannel()
         val writeChan = sock.openWriteChannel(autoFlush = true)
@@ -140,11 +147,16 @@ class MqttClient(
             val packetType = typeByte ushr 4
             val remLen = readMqttLength(readChan)
             val payload = ByteArray(remLen)
-            readChan.readFully(payload)
+            kotlinx.coroutines.withTimeout(30_000) { readChan.readFully(payload) }
 
             when (packetType) {
                 3 -> { // PUBLISH
                     handleIncomingPublish(payload)
+                }
+                9 -> { // SUBACK must precede the first publish to a newly subscribed inbox.
+                    require(payload.size >= 3 && payload[2] != 0x80.toByte())
+                    val pid = ((payload[0].toInt() and 255) shl 8) or (payload[1].toInt() and 255)
+                    pendingSubscriptions.remove(pid)?.complete(Unit)
                 }
                 13 -> { // PINGRESP
                     // Heartbeat acknowledged
@@ -185,18 +197,21 @@ class MqttClient(
         return subParts.size == actParts.size
     }
 
-    suspend fun subscribe(topic: String, onMessage: (String, ByteArray) -> Unit) = withContext(Dispatchers.IO) {
+    override suspend fun subscribe(topic: String, onMessage: (String, ByteArray) -> Unit) = withContext(Dispatchers.IO) {
         subscriptions[topic] = onMessage
         val chan = writeChannel
         if (_isConnected.value && chan != null) {
             try {
-                sendSubscribePacket(chan, topic)
-            } catch (_: Exception) {
+                val pending = sendSubscribePacket(chan, topic)
+                kotlinx.coroutines.withTimeout(30_000) { pending.await() }
+            } catch (e: Exception) {
+                com.app.quickpear.security.SecurityLog.event("mqtt_subscribe_failed")
+                throw e
             }
         }
     }
 
-    suspend fun unsubscribe(topic: String) = withContext(Dispatchers.IO) {
+    override suspend fun unsubscribe(topic: String) = withContext(Dispatchers.IO) {
         subscriptions.remove(topic)
         val chan = writeChannel
         if (_isConnected.value && chan != null) {
@@ -222,12 +237,15 @@ class MqttClient(
         }
     }
 
-    suspend fun publish(topic: String, message: ByteArray) = withContext(Dispatchers.IO) {
-        val chan = writeChannel ?: return@withContext
-        if (!_isConnected.value) return@withContext
+    override suspend fun publish(topic: String, message: ByteArray) = withContext(Dispatchers.IO) {
+        val chan = writeChannel ?: error("MQTT unavailable")
+        check(_isConnected.value) { "MQTT unavailable" }
+        require(message.size + topic.encodeToByteArray().size + 2 <= MAX_MQTT_PACKET_LENGTH)
         try {
             sendPublishPacket(chan, topic, message)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            com.app.quickpear.security.SecurityLog.event("mqtt_publish_failed")
+            throw e
         }
     }
 
@@ -258,10 +276,12 @@ class MqttClient(
         }
     }
 
-    private suspend fun sendSubscribePacket(chan: ByteWriteChannel, topic: String) {
+    private suspend fun sendSubscribePacket(chan: ByteWriteChannel, topic: String): kotlinx.coroutines.CompletableDeferred<Unit> {
         val buf = Buffer()
         // Packet ID
-        val pid = packetIdCounter++
+        val pid = synchronized(pendingSubscriptions) { packetIdCounter = packetIdCounter % 65535 + 1; packetIdCounter }
+        val pending = kotlinx.coroutines.CompletableDeferred<Unit>()
+        pendingSubscriptions[pid] = pending
         buf.writeShort(pid)
         // Topic + QoS 0
         val tBytes = topic.encodeToByteArray()
@@ -278,6 +298,7 @@ class MqttClient(
         writeMutex.withLock {
             chan.writeFully(packet.readByteArray())
         }
+        return pending
     }
 
     private suspend fun sendPublishPacket(chan: ByteWriteChannel, topic: String, payload: ByteArray) {
@@ -300,7 +321,7 @@ class MqttClient(
 
     private suspend fun readByteFromChan(chan: ByteReadChannel): Int {
         val b = ByteArray(1)
-        chan.readFully(b)
+        kotlinx.coroutines.withTimeout(60_000) { chan.readFully(b) }
         return b[0].toInt() and 0xFF
     }
 
@@ -311,7 +332,7 @@ class MqttClient(
             val encodedByte = readByteFromChan(chan)
             value += (encodedByte and 0x7F) * multiplier
             multiplier *= 128
-            if (multiplier > 128 * 128 * 128) {
+            if (multiplier > 128 * 128 * 128 && (encodedByte and 0x80) != 0) {
                 throw IllegalStateException("Malformed Remaining Length in MQTT packet")
             }
         } while ((encodedByte and 0x80) != 0)
@@ -322,7 +343,7 @@ class MqttClient(
     }
 
     companion object {
-        const val MAX_MQTT_PACKET_LENGTH = 4 * 1024 * 1024 // 4 MB safety limit
+        const val MAX_MQTT_PACKET_LENGTH = 1024 * 1024
     }
 
     private fun writeMqttLength(buf: Buffer, length: Int) {

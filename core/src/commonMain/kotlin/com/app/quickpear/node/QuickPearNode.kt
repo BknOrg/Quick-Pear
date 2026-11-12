@@ -51,12 +51,14 @@ class QuickPearNode(
     val proximityEngine: BleProximityEngine = BleProximityEngine(),
     val p2pLinkNegotiator: com.app.quickpear.network.P2pLinkNegotiator = com.app.quickpear.network.NoOpP2pLinkNegotiator,
     val port: Int = 8888,
-    fileSystem: FileSystem = FileSystem.SYSTEM
+    fileSystem: FileSystem = FileSystem.SYSTEM,
+    identityDirectory: Path = dataDirectory,
+    onFileFinalized: (Path) -> Unit = {}
 ) : AdaptiveDiscovery {
 
-    val identity: DeviceIdentity = DeviceIdentity.loadOrCreate(dataDirectory, fileSystem)
+    val identity: DeviceIdentity = DeviceIdentity.loadOrCreate(identityDirectory, fileSystem)
     val trustStore: TrustStore = TrustStore(dataDirectory, fileSystem)
-    val partFileManager: PartFileManager = PartFileManager(downloadDirectory, fileSystem)
+    val partFileManager: PartFileManager = PartFileManager(downloadDirectory, fileSystem, onFinalized = onFileFinalized)
     val transferEngine: TransferEngine = TransferEngine(partFileManager, fileSystem)
     val webShareServer: com.app.quickpear.web.InstantWebShareServer = com.app.quickpear.web.InstantWebShareServer(fileSystem)
     val textReceivedFlow = kotlinx.coroutines.flow.MutableSharedFlow<Pair<PeerIdentity, String>>(extraBufferCapacity = 16)
@@ -164,15 +166,20 @@ class QuickPearNode(
                 try {
                     socketServer.acceptConnections().collect { connection ->
                         if (!isActive) return@collect
+                        if (!connectionSemaphore.tryAcquire()) {
+                            connection.close()
+                            return@collect
+                        }
                         scope.launch {
-                            connectionSemaphore.withPermit {
-                                try {
-                                    incomingHandler.handle(connection)
-                                } catch (_: Exception) {
-                                } finally {
-                                    connection.close()
-                                    p2pLinkNegotiator.disconnectHotspot()
-                                }
+                            try {
+                                incomingHandler.handle(connection)
+                            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+                            } catch (_: Exception) {
+                                com.app.quickpear.security.SecurityLog.event("incoming_session_failed")
+                            } finally {
+                                connection.close()
+                                connectionSemaphore.release()
+                                p2pLinkNegotiator.disconnectHotspot()
                             }
                         }
                     }
@@ -365,14 +372,16 @@ class QuickPearNode(
     private var activeSendingJob: kotlinx.coroutines.Job? = null
 
     fun cancelTransfer(reason: String = "Transfer cancelled by user") {
-        activeSendingJob?.cancel()
         transferEngine.cancelTransfer(reason)
+        signalingClient.cancelTransfers(reason)
+        val job = activeSendingJob
+        scope.launch { kotlinx.coroutines.delay(3000); job?.cancel() }
     }
 
     suspend fun sendFiles(
         target: PeerDevice,
         files: Map<FileMetadata, Path>,
-        sessionId: String = "session-${System.currentTimeMillis()}"
+        sessionId: String = com.app.quickpear.session.TransferSessionIds.forFiles(target.id, files.keys)
     ) = kotlinx.coroutines.coroutineScope {
         activeSendingJob = coroutineContext[kotlinx.coroutines.Job]
         try {
@@ -380,16 +389,16 @@ class QuickPearNode(
                 // Tier 1: Fast Direct TCP Probe (if IP is reachable on LAN / public IP)
                 if (target.ipAddress.isNotBlank() && target.ipAddress != "cloud-relay") {
                     try {
-                        kotlinx.coroutines.withTimeout(400L) {
-                            client.sendFiles(
-                                host = target.ipAddress,
-                                port = target.port,
-                                sessionId = sessionId,
-                                files = files,
-                                expectedPeerId = target.id
-                            )
-                        }
+                        client.sendFiles(
+                            host = target.ipAddress,
+                            port = target.port,
+                            sessionId = sessionId,
+                            files = files,
+                            expectedPeerId = target.id
+                        )
+                        check(transferEngine.progressState.value?.status == com.app.quickpear.domain.TransferStatus.COMPLETED) { "Direct transfer failed" }
                         return@coroutineScope
+                    } catch (e: kotlinx.coroutines.CancellationException) { throw e
                     } catch (_: Exception) {
                         // Direct connection failed, proceed to Tier 2
                     }
@@ -408,7 +417,7 @@ class QuickPearNode(
                                     hostIp = hotspot.hostIp,
                                     port = hotspot.port,
                                     sessionId = sessionId,
-                                    timeoutMillis = 1000L
+                                    timeoutMillis = 30_000L
                                 )
                                 if (accepted && receiverLocalIp.isNotBlank()) {
                                     client.sendFiles(
@@ -418,19 +427,21 @@ class QuickPearNode(
                                         files = files,
                                         expectedPeerId = target.id
                                     )
+                                    check(transferEngine.progressState.value?.status == com.app.quickpear.domain.TransferStatus.COMPLETED) { "Direct transfer failed" }
                                     return@coroutineScope
                                 }
                             } finally {
                                 p2pLinkNegotiator.stopLocalHotspot()
                             }
                         }
+                    } catch (e: kotlinx.coroutines.CancellationException) { throw e
                     } catch (_: Exception) {
                         p2pLinkNegotiator.stopLocalHotspot()
                     }
                 }
 
-                // Tier 3: Cloud Relay (Burst Pipeline < 10 MB / Sliding Window >= 10 MB)
-                signalingClient.sendFiles(target, files, sessionId)
+                // Tier 3: Authenticated relay or encrypted MQTT frames
+                check(signalingClient.sendFiles(target, files, sessionId)) { "Cloud transfer failed; retry to resume" }
                 return@coroutineScope
             }
             triggerBurstBeacon()
@@ -451,9 +462,11 @@ class QuickPearNode(
                     files = files,
                     expectedPeerId = target.id
                 )
+                check(transferEngine.progressState.value?.status == com.app.quickpear.domain.TransferStatus.COMPLETED) { "Direct transfer failed" }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
             } catch (e: Exception) {
                 if (trustStore.isTrusted(target.id)) {
-                    signalingClient.sendFiles(target, files, sessionId)
+                    check(signalingClient.sendFiles(target, files, sessionId)) { "Cloud transfer failed; retry to resume" }
                 } else {
                     throw e
                 }
